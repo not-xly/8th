@@ -8,8 +8,8 @@ import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
 
 /**
- * App preferences, mirroring the Flutter `shared_preferences` keys so the
- * one-time migration is a plain copy (see [migrateFromFlutterIfNeeded]).
+ * App preferences, mirroring the legacy shared_preferences keys so the
+ * one-time migration is a plain copy (see [migrateLegacyPrefsIfNeeded]).
  *
  * Ordered lists ([KEY_FILE_PATHS], [KEY_ALBUM_ORDER]) are stored as a single
  * string joined with \n: a SharedPreferences StringSet loses order and the
@@ -60,25 +60,25 @@ class Prefs(context: Context) {
     private fun String.decodeListValue(): List<String> =
         if (isEmpty()) emptyList() else split('\n')
 
-    // ---- One-time migration from the Flutter app ----
+    // ---- One-time migration from legacy installs ----
 
     /**
-     * Imports tree_uri / file_paths / album_order from the legacy Flutter
+     * Imports tree_uri / file_paths / album_order from the legacy shared_preferences file written by
      * shared_preferences file, once. Keys already present in our prefs win
      * (never overwritten); any failure leaves the data keys untouched.
      */
-    suspend fun migrateFromFlutterIfNeeded() = withContext(Dispatchers.IO) {
+    suspend fun migrateLegacyPrefsIfNeeded() = withContext(Dispatchers.IO) {
         if (prefs.getBoolean(KEY_MIGRATED, false)) return@withContext
         try {
             val legacy = File(
                 appContext.applicationInfo.dataDir,
-                "shared_prefs/FlutterSharedPreferences.xml",
+                "shared_prefs/legacy shared preferences file",
             )
             if (legacy.isFile) {
                 val values = readLegacyStrings(legacy)
-                importString(values, "flutter.tree_uri", KEY_TREE_URI)
-                importList(values, "flutter.file_paths", KEY_FILE_PATHS)
-                importList(values, "flutter.album_order", KEY_ALBUM_ORDER)
+                importString(values, "legacy tree_uri", KEY_TREE_URI)
+                importList(values, "legacy file_paths", KEY_FILE_PATHS)
+                importList(values, "legacy album_order", KEY_ALBUM_ORDER)
             }
         } catch (_: Exception) {
         } finally {
@@ -96,7 +96,7 @@ class Prefs(context: Context) {
     private fun importList(values: Map<String, String>, legacyKey: String, key: String) {
         val raw = values[legacyKey] ?: return
         if (prefs.contains(key)) return
-        val decoded = FlutterPrefsCodecs.decodeStringList(raw) ?: return
+        val decoded = LegacyPrefsCodecs.decodeStringList(raw) ?: return
         prefs.edit().putString(key, decoded.encodeListValue()).apply()
     }
 
@@ -130,7 +130,7 @@ class Prefs(context: Context) {
  * (a) "!" + JSON array of strings (newer Dart versions), or
  * (b) "!" + Base64 of a Java-serialized java.util.ArrayList<String> (older).
  */
-object FlutterPrefsCodecs {
+object LegacyPrefsCodecs {
 
     /** Base64 of "This is the prefix for a list." — the Dart list marker. */
     const val LIST_PREFIX = "VGhpcyBpcyB0aGUgcHJlZml4IGZvciBhIGxpc3Qu"

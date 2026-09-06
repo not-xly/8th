@@ -69,7 +69,7 @@ private enum class LockedAxis { Horizontal, Vertical }
 private enum class SlidePhase { Idle, Exiting, Entering }
 
 /**
- * Mini reproductor con gestos (port of widgets/mini_player.dart): swipe
+ * Mini reproductor con gestos (mini player with gestures): swipe
  * horizontal con peek para cambiar de tema, swipe vertical para abrir el
  * full player y barra de progreso superpuesta.
  */

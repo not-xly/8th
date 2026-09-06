@@ -25,7 +25,7 @@ import kotlin.math.abs
  */
 object LrcLogic {
 
-    // ---- File name scheme (must stay identical to the Flutter build so
+    // ---- File name scheme (must stay identical to the previous app version so
     // existing .lrc files keep matching) ----
 
     /** Removes filename-illegal characters, collapses whitespace, caps at 80 chars. */
@@ -174,7 +174,7 @@ class SharedPreferencesLrcPrefs(context: Context) : LrcPrefs {
 }
 
 /**
- * Port of the Flutter lyrics_service: resolves the .lrc directory, parses LRC,
+ * Lyrics source + cache: resolves the .lrc directory, parses LRC,
  * fetches lyrics (lrclib.net -> NetEase -> lyrics.ovh) and bulk-syncs the library.
  */
 class LyricsRepository(private val context: Context, private val prefs: LrcPrefs) {
@@ -229,7 +229,7 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
     /**
      * Resolves the 8th_lrc directory with cache. Priority: music folder from
      * prefs (write-probed ONCE, failure remembered so scoped storage is not
-     * re-probed per song) -> app-specific external dir -> legacy Flutter
+     * re-probed per song) -> app-specific external dir -> legacy internal
      * internal dir when present (data compatibility) -> filesDir.
      */
     suspend fun getLrcDir(): File = withContext(Dispatchers.IO) {
@@ -302,7 +302,7 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
         } catch (_: Exception) {
         }
 
-        // Fallback 3: reuse the Flutter build's internal dir when it exists,
+        // Fallback 3: reuse the previous app version's internal dir when it exists,
         // otherwise the native equivalent (filesDir).
         val legacy = File(File(context.dataDir, "app_flutter"), lrcFolderName)
         if (legacy.exists()) {

@@ -66,7 +66,7 @@ import com.xly.u_8th.util.fmtMs
 import kotlin.math.roundToLong
 
 /**
- * Full lyrics screen, port of lib/src/screens/lyrics_full_screen.dart:
+ * Full lyrics screen, full lyrics screen:
  * glass app bar with two-line title, small art, expanded lyrics panel and
  * mini transport controls. Swipe down (slow or fling) returns to the player.
  */
@@ -84,7 +84,7 @@ fun LyricsScreen(nav: NavController) {
 
     val song = queue.getOrNull(queueIndex)
 
-    // Keep the previous art when the new song has none (Dart albumArt carry-over).
+    // Keep the previous art when the new song has none .
     val decodedArt = rememberDecodedArt(song?.albumArt)
     var lastArt by remember { mutableStateOf(decodedArt) }
     if (decodedArt != null) lastArt = decodedArt
@@ -270,7 +270,7 @@ fun LyricsScreen(nav: NavController) {
     }
 }
 
-/** Bare icon button (no glass chip), like the plain Flutter IconButtons. */
+/** Bare icon button (no glass chip), plain icon button. */
 @Composable
 private fun PlainControl(
     icon: ImageVector,

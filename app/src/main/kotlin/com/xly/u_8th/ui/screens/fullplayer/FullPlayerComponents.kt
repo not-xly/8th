@@ -60,7 +60,7 @@ fun GradientBackdrop(
 }
 
 /**
- * 56dp translucent app bar with a bottom hairline, matching the Flutter
+ * 56dp translucent app bar with a bottom hairline, matching the original
  * PreferredSize AppBar (glassSurface 42% + glassBorder hairline).
  */
 @Composable
@@ -105,7 +105,7 @@ fun rememberPlayerConnection(): PlayerConnection {
 
 /**
  * Decodes [art] off the main thread, downsampling toward ~560px like the
- * Flutter `cacheWidth: 560`. Keyed by content (length + sampled hash) so
+ * decode capped at ~560px. Keyed by content (length + sampled hash) so
  * identical bytes never decode twice across recompositions.
  */
 @Composable

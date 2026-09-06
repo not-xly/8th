@@ -48,7 +48,7 @@ data class LoadResult(val songs: List<Song>?, val folderScanned: Boolean)
 /**
  * Library loading: MediaStore/SAF listing and metadata parsing, ported from
  * library_service.dart plus the native channel that lived in the old
- * Flutter-era MainActivity.
+ * legacy MainActivity.
  *
  * [context]/[prefs] are nullable only so JVM unit tests can exercise the
  * pure conversion ([songsFromMedia]) without an Android Context; production
@@ -78,9 +78,9 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
     // ---- Direct scan ----
 
     /**
-     * Recursive scan (the Dart fallback for when MediaStore/DATA fails under
+     * Recursive scan (the direct-scan fallback for when MediaStore/DATA fails under
      * scoped storage). Symlinks are not followed (walkTopDown default): a
-     * symlink loop would hang the walk. Sorted alphabetically, like Dart.
+     * symlink loop would hang the walk. Sorted alphabetically, alphabetical.
      */
     suspend fun scanDirectoryForAudio(dirPath: String): List<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -376,7 +376,7 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
     }
 
     /**
-     * Port of parseMetadata (song_data.dart): file paths are filtered by
+     * Port of the metadata parser: file paths are filtered by
      * extension and parsed off-thread; content:// URIs also get their tags
      * read here (the picker fallback saves URIs, not paths, so without this
      * those libraries would show no artist/album/duration). Missing or
@@ -469,13 +469,13 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
     // ---- Cold-start restore ----
 
     /**
-     * Songs from the saved treeUri or filePaths (after the Flutter prefs
+     * Songs from the saved treeUri or filePaths (after the legacy prefs
      * migration), without interactive fallbacks. Null when nothing is
      * configured or nothing loads.
      */
     suspend fun restoreSongs(): List<Song>? = withContext(Dispatchers.IO) {
         val p = prefs ?: return@withContext null
-        p.migrateFromFlutterIfNeeded()
+        p.migrateLegacyPrefsIfNeeded()
         val treeUri = p.getTreeUri()
         if (!treeUri.isNullOrEmpty()) {
             loadFromTreeUri(treeUri).songs?.takeIf { it.isNotEmpty() }?.let { return@withContext it }

@@ -56,7 +56,7 @@ sealed interface UiEvent {
 }
 
 /**
- * Immutable UI state for the main screen (port of the Flutter
+ * Immutable UI state for the main screen (stable UI state for the main screen
  * MusicPlayerController's notifyListeners state). Audio state itself lives
  * in [PlayerBus]; this holds library/selection/search/sync state.
  */
@@ -85,7 +85,7 @@ data class MainUiState(
 }
 
 /**
- * Port of lib/src/controllers/music_player_controller.dart: library loading,
+ * Main screen business logic: library loading,
  * album-art enrichment, play modes, lyrics sync and search. One-shots go
  * through [events]; state through [state].
  */
@@ -129,7 +129,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            prefs.migrateFromFlutterIfNeeded()
+            prefs.migrateLegacyPrefsIfNeeded()
             // Lecturas de prefs en paralelo (port del controller.init).
             val albumOrder = async { prefs.getAlbumOrder() }
             val treeUri = async { prefs.getTreeUri() }

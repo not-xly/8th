@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Publishes playback snapshots to the car via [AutoPlaybackState], with the
- * change-detection port of the Flutter controller's _pushAutoSnapshot:
+ * change-detection stable UI state for the main screen controller's _pushAutoSnapshot:
  * a 1s tick plus a cheap signature — only pushed when the state changed, the
  * position advanced (>=2s while playing), or a 10s playing heartbeat fired.
  * Before, the whole queue was serialized every 500ms even while paused.

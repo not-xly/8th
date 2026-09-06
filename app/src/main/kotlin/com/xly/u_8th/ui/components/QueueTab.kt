@@ -193,7 +193,7 @@ private fun QueueList(
                             center >= item.offset && center <= item.offset + item.size
                         } ?: return@QueueRow
                         if (target.index == index) return@QueueRow
-                        // RAW drop index estilo Flutter (punto de inserción
+                        // RAW drop index (insertion point
                         // pre-removal): QueueManager hace el ajuste -1.
                         val newIndex = if (target.index > index) target.index + 1 else target.index
                         val finalPos = target.index

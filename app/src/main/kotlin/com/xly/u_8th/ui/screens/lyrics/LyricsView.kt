@@ -64,7 +64,7 @@ import kotlinx.coroutines.flow.first
 import kotlin.math.roundToInt
 
 /**
- * Lyrics pipeline, port of lib/src/widgets/lyrics_view.dart: local .lrc ->
+ * Lyrics pipeline, local .lrc ->
  * one-shot network fetch -> synced/plain/missing rendering with line
  * highlighting and auto-scroll keeping the current line at ~40% height.
  */
@@ -275,7 +275,7 @@ private fun SyncedLyricsList(
                     contentAlignment = Alignment.Center,
                 ) {
                     // Fixed typography for every line: only scale/color animate,
-                    // so the current line never re-wraps (see Dart AnimatedScale).
+                    // so the current line never re-wraps .
                     Text(
                         line.text,
                         color = textColor,

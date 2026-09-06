@@ -81,7 +81,7 @@ import kotlin.math.abs
 import kotlin.math.roundToLong
 
 /**
- * Full player, port of lib/src/screens/full_player_screen.dart: directional
+ * Full player, directional
  * song showcase, scrubber, transport controls and fling gestures
  * (left/right skip, up opens the queue sheet, down closes).
  */

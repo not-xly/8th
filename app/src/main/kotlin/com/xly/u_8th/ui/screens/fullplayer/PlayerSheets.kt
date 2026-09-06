@@ -126,7 +126,7 @@ fun QueueSheetForFullPlayer(onDismiss: () -> Unit) {
             reordered.add(target, reordered.removeAt(from))
             localList = reordered
             // QueueManager.reorderQueue does the -1 adjustment internally
-            // (Dart ReorderableListView raw newIndex semantics).
+            // (raw drop index; QueueManager adjusts internally).
             connection.launch { move(from, if (from < target) target + 1 else target) }
             // Keep the card under the finger after its slot jumped.
             dragDelta -= (target - from) * dragged.size

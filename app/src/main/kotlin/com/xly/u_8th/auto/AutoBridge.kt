@@ -11,7 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 
 /**
  * Car screens -> playback routing. Native-to-native now: instead of an
- * EventChannel into Flutter, commands go straight to the media3 session via
+ * in-process session bridge: commands go straight to the media3 session via
  * [PlayerConnection] and state reaches the car through AutoPlaybackState
  * (written by AutoStateSync), so the old pending/deliver machinery is gone.
  */
