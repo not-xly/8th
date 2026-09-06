@@ -11,6 +11,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -30,11 +31,15 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     @Volatile
     private var controller: MediaController? = null
 
-    /** Builds the controller once and caches it (rebuilds after a disconnect). */
-    suspend fun awaitController(): MediaController {
-        controller?.takeIf { it.isConnected }?.let { return it }
-        return mutex.withLock {
-            controller?.takeIf { it.isConnected }?.let { return it }
+    /**
+     * Builds the controller once and caches it (rebuilds after a disconnect).
+     * MediaController requires every call on its application looper, so all
+     * controller work is confined to the main dispatcher.
+     */
+    suspend fun awaitController(): MediaController = withContext(Dispatchers.Main.immediate) {
+        controller?.takeIf { it.isConnected }?.let { return@withContext it }
+        mutex.withLock {
+            controller?.takeIf { it.isConnected }?.let { return@withLock it }
             controller?.release()
             buildController().also { controller = it }
         }
@@ -79,32 +84,33 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     // ---- Transport ----
 
     suspend fun play() {
-        awaitController().play()
+        withContext(Dispatchers.Main.immediate) { awaitController().play() }
     }
 
     suspend fun pause() {
-        awaitController().pause()
+        withContext(Dispatchers.Main.immediate) { awaitController().pause() }
     }
 
-    suspend fun togglePlay() {
+    suspend fun togglePlay() = withContext(Dispatchers.Main.immediate) {
         val controller = awaitController()
         if (controller.isPlaying) {
             controller.pause()
         } else {
             controller.play()
         }
+        Unit
     }
 
     suspend fun next() {
-        awaitController().seekToNextMediaItem()
+        withContext(Dispatchers.Main.immediate) { awaitController().seekToNextMediaItem() }
     }
 
     suspend fun prev() {
-        awaitController().seekToPreviousMediaItem()
+        withContext(Dispatchers.Main.immediate) { awaitController().seekToPreviousMediaItem() }
     }
 
     suspend fun seekTo(ms: Long) {
-        awaitController().seekTo(ms)
+        withContext(Dispatchers.Main.immediate) { awaitController().seekTo(ms) }
     }
 
     /** Custom SEEK_INDEX (not seekToDefaultPosition) so QueueManager syncs the index. */
@@ -192,11 +198,13 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
 
     // ---- Internals ----
 
-    private suspend fun sendOn(controller: MediaController, action: String, args: Bundle) {
+    private suspend fun sendOn(controller: MediaController, action: String, args: Bundle) = withContext(Dispatchers.Main.immediate) {
         try {
             controller.sendCustomCommand(SessionCommand(action, args), args)
         } catch (_: Exception) {
+            // The state stays whatever the service had; never crash callers.
         }
+        Unit
     }
 
     private suspend fun sendCustom(action: String, build: Bundle.() -> Unit) {

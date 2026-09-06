@@ -356,13 +356,18 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
             is String -> t.substringBefore('/').trim().toIntOrNull()?.takeIf { it > 0 }
             else -> null
         }
+        // MediaStore fills "<unknown>" into untagged tags: show the app's
+        // "Desconocido" instead of leaking the literal placeholder.
+        fun cleanTag(raw: String?): String? =
+            raw?.trim()?.takeIf { it.isNotEmpty() && !it.equals("<unknown>", ignoreCase = true) }
+        val album = cleanTag(m.album)
         Song(
             path = uri,
             contentUri = uri,
             filePath = m.path,
             title = m.title ?: name.replace(Regex("\\.[^.]+$"), ""),
-            artist = MetadataFixes.artistFor(album = m.album, artist = m.artist),
-            album = m.album,
+            artist = MetadataFixes.artistFor(album = album, artist = cleanTag(m.artist)),
+            album = album,
             trackNumber = track,
             durationMs = m.duration.takeIf { it > 0 },
             albumArtUri = m.artUri?.takeIf { it.isNotEmpty() },

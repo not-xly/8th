@@ -158,25 +158,34 @@ fun AquaSlider(
 
     fun fractionAt(x: Float): Float = (if (width > 0f) x / width else 0f).coerceIn(0f, 1f)
 
+    // Latest fraction seen this gesture: onScrubEnd gets the live value,
+    // not the `progress` captured when the callback was created.
+    var latestFraction by androidx.compose.runtime.remember { mutableStateOf(progress) }
+
+    fun seekTo(fraction: Float) {
+        latestFraction = fraction
+        onSeek(fraction)
+    }
+
     Box(
         modifier = modifier
             .onSizeChanged { width = it.width.toFloat() }
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { offset -> onSeek(fractionAt(offset.x)) },
+                    onTap = { offset -> seekTo(fractionAt(offset.x)) },
                 )
             }
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         onScrubStart()
-                        onSeek(fractionAt(offset.x))
+                        seekTo(fractionAt(offset.x))
                     },
-                    onDragEnd = { onScrubEnd(if (width > 0) progress.coerceIn(0f, 1f) else 0f) },
-                    onDragCancel = { onScrubEnd(if (width > 0) progress.coerceIn(0f, 1f) else 0f) },
+                    onDragEnd = { onScrubEnd(latestFraction) },
+                    onDragCancel = { onScrubEnd(latestFraction) },
                 ) { change, _ ->
                     change.consume()
-                    onSeek(fractionAt(change.position.x))
+                    seekTo(fractionAt(change.position.x))
                 }
             }
             .heightIn(min = touchHeight),

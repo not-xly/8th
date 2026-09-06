@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -466,7 +467,10 @@ fun MiniPlayer(
                             Spacer(Modifier.width(2.dp))
                         }
                     }
-                    // Barra de progreso superpuesta al borde inferior
+                    // Barra de progreso superpuesta al borde inferior.
+                    // SOLO la franja inferior (14dp) es interactiva: si el
+                    // slider cubriera la tarjeta entera, se comería los
+                    // toques de abrir el player y los swipes de cambio.
                     Box(Modifier.align(Alignment.BottomCenter)) {
                         val progress = scrubRatio?.takeIf { scrubbing }
                             ?: (if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f)
@@ -495,7 +499,7 @@ fun MiniPlayer(
                                 scrubRatio = null
                             },
                             touchHeight = 14.dp,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }

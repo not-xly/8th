@@ -193,7 +193,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Library loading ----
 
     fun pickFolder(treeUri: String) {
-        loadFromTreeUri(treeUri)
+        // Persisted here (the picker only returns the URI): next launch
+        // restores the library without re-asking. The file-paths mode is
+        // cleared so a stale source never wins silently.
+        viewModelScope.launch {
+            runCatching { prefs.setTreeUri(treeUri) }
+            runCatching { prefs.setFilePaths(emptyList()) }
+            loadFromTreeUri(treeUri)
+        }
     }
 
     /** Result of the OpenMultipleDocuments picker; empty = cancelled. */

@@ -28,6 +28,9 @@ class ExoPlayerOps(
     override fun replaceItems(songs: List<Song>, startIndex: Int, startPositionMs: Long): Boolean {
         return try {
             player.setMediaItems(songs.map { mediaItemFor(it) }, startIndex, startPositionMs)
+            // setMediaItems leaves the player idle: prepare() moves it to
+            // buffering/ready so the subsequent play() actually starts.
+            player.prepare()
             true
         } catch (_: Exception) {
             false
