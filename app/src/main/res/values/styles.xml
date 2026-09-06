@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app UI is always dark (OLED black), so a single dark theme is used. -->
+    <style name="Theme.Eighth" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/app_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="LaunchTheme" parent="Theme.Eighth">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+</resources>

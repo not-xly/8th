@@ -16,6 +16,10 @@ import '../utils/hashing.dart';
 /// se reproduce (evita que el sistema cierre la app en segundo plano).
 class EighthAudioHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer player;
+  /// Rutas de salto robustas (toques rápidos) inyectadas por el servicio;
+  /// si no están asignadas, se usa el seek directo del player.
+  void Function()? onSkipNext;
+  void Function()? onSkipPrevious;
   // ignore: unused_field - kept for future dispose if handler lifecycle changes
   late final List<StreamSubscription> _subs;
 
@@ -79,6 +83,10 @@ class EighthAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> skipToNext() async {
+    if (onSkipNext != null) {
+      onSkipNext!();
+      return;
+    }
     if (player.hasNext) {
       await player.seek(Duration.zero, index: player.nextIndex);
     } else {
@@ -92,6 +100,10 @@ class EighthAudioHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> skipToPrevious() async {
+    if (onSkipPrevious != null) {
+      onSkipPrevious!();
+      return;
+    }
     if (player.hasPrevious) {
       await player.seek(Duration.zero, index: player.previousIndex);
     } else {
@@ -181,6 +193,9 @@ class AudioPlayerService {
     } catch (e) {
       debugPrint('AudioService.init error: $e');
     }
+    // Notificación/sistema usan el mismo salto robusto que la UI.
+    handler?.onSkipNext = playNext;
+    handler?.onSkipPrevious = playPrevious;
 
     // Arte en la notificación al cambiar de tema: los sources que NO eran
     // el inicial se crean con withArt:false (escribir N ficheros temporales
@@ -414,22 +429,45 @@ class AudioPlayerService {
     return failed;
   }
 
-  void playNext() {
-    if (queueState.list.isEmpty) return;
-    if (player.hasNext) {
-      player.seek(Duration.zero, index: player.nextIndex);
-    } else {
-      player.seek(Duration.zero, index: 0);
-    }
-  }
+  void playNext() => _skip(1);
 
-  void playPrevious() {
-    if (queueState.list.isEmpty) return;
-    if (player.hasPrevious) {
-      player.seek(Duration.zero, index: player.previousIndex);
-    } else {
-      player.seek(Duration.zero, index: queueState.list.length - 1);
+  void playPrevious() => _skip(-1);
+
+  /// Salto robusto ante toques rápidos. El destino se calcula desde
+  /// queueState.index (actualizado de forma optimista aquí) y NO desde
+  /// player.currentIndex/nextIndex, que no cambian hasta que el seek
+  /// anterior termina de cargar: antes, dar a "siguiente" varias veces
+  /// seguidas recalculaba el mismo destino y la portada/título no se
+  /// actualizaban.
+  void _skip(int direction) {
+    final n = queueState.list.length;
+    if (n == 0) return;
+    var target = (queueState.index + direction) % n;
+    if (target < 0) target += n;
+    // Shuffle nativo activo: recorre el orden aleatorio del player.
+    if (player.shuffleModeEnabled && player.shuffleIndices.length == n) {
+      final order = player.shuffleIndices;
+      final pos = order.indexOf(queueState.index);
+      if (pos >= 0) {
+        var nextPos = pos + direction;
+        if (nextPos < 0) nextPos = n - 1;
+        if (nextPos >= n) nextPos = 0;
+        target = order[nextPos];
+      }
     }
+    queueState.index = target;
+    if (!hasPlaylist) return;
+    player.seek(Duration.zero, index: target).then(
+      (_) {},
+      onError: (_) {
+        // Seek fallido (fichero roto…): vuelve al índice real del player
+        // para que la UI no apunte a una canción que no suena.
+        final real = player.currentIndex;
+        if (real != null && real >= 0 && real < queueState.list.length) {
+          queueState.index = real;
+        }
+      },
+    );
   }
 
   Future<bool> addToQueueNext(SongData song) async {

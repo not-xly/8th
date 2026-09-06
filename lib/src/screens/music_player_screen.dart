@@ -185,6 +185,8 @@ class _MusicPlayerScreenState extends State<MusicPlayerScreen> {
           onGoTo: (i) {
             _controller.player.seek(Duration.zero, index: i);
           },
+          onNext: _controller.playNext,
+          onPrevious: _controller.playPrevious,
           onRemoveFromQueue: (i) async {
             await _controller.removeFromQueue(i);
           },

@@ -156,5 +156,57 @@ void main() {
         expect(src, isNotNull);
       });
     });
+
+    group('playNext/playPrevious - toques rápidos', () {
+      // Regresión: el destino se calculaba con player.nextIndex, que no
+      // cambia hasta que el seek anterior termina de cargar, así que varios
+      // toques rápidos solo avanzaban una canción (portada/título sin
+      // actualizar). Ahora el destino sale de queueState.index optimista.
+      test('N toques de next seguidos avanzan N canciones', () {
+        final songs = [
+          makeSong('a.mp3'),
+          makeSong('b.mp3'),
+          makeSong('c.mp3'),
+          makeSong('d.mp3'),
+          makeSong('e.mp3'),
+        ];
+        service.queueState = QueueState(list: List.from(songs), index: 0, label: 'Test');
+        service.playNext();
+        expect(service.queueState.index, 1);
+        service.playNext();
+        service.playNext();
+        expect(service.queueState.index, 3);
+      });
+
+      test('next envuelve al inicio al llegar al final', () {
+        final songs = [makeSong('a.mp3'), makeSong('b.mp3'), makeSong('c.mp3')];
+        service.queueState = QueueState(list: List.from(songs), index: 2, label: 'Test');
+        service.playNext();
+        expect(service.queueState.index, 0);
+      });
+
+      test('N toques de prev seguidos retroceden N canciones y envuelven', () {
+        final songs = [
+          makeSong('a.mp3'),
+          makeSong('b.mp3'),
+          makeSong('c.mp3'),
+          makeSong('d.mp3'),
+        ];
+        service.queueState = QueueState(list: List.from(songs), index: 0, label: 'Test');
+        service.playPrevious();
+        expect(service.queueState.index, 3);
+        service.playPrevious();
+        expect(service.queueState.index, 2);
+      });
+
+      test('cola de 1 tema: next/prev se mantienen en el índice 0', () {
+        final songs = [makeSong('a.mp3')];
+        service.queueState = QueueState(list: List.from(songs), index: 0, label: 'Test');
+        service.playNext();
+        expect(service.queueState.index, 0);
+        service.playPrevious();
+        expect(service.queueState.index, 0);
+      });
+    });
   });
 }

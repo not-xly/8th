@@ -14,6 +14,8 @@ class FullPlayerScreen extends StatefulWidget {
   final QueueState queueState;
   final AudioPlayer player;
   final void Function(int index) onGoTo;
+  final void Function() onNext;
+  final void Function() onPrevious;
   final Future<void> Function(int index) onRemoveFromQueue;
   final Future<void> Function(int oldIndex, int newIndex) onReorderQueue;
   final bool queueShuffled;
@@ -26,6 +28,8 @@ class FullPlayerScreen extends StatefulWidget {
     required this.queueState,
     required this.player,
     required this.onGoTo,
+    required this.onNext,
+    required this.onPrevious,
     required this.onRemoveFromQueue,
     required this.onReorderQueue,
     required this.queueShuffled,
@@ -103,26 +107,18 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
   }
 
   /// Siguiente/anterior compartido por botones y swipe horizontal.
-  /// `player.nextIndex/previousIndex` respetan el shuffle nativo.
+  /// Delegan en el servicio (salto robusto ante toques rápidos: el índice
+  /// de queueState se actualiza al instante y la portada/título responden
+  /// al primer toque).
   void _skipNext() {
-    final qs = widget.queueState;
     _switchDir = 1;
-    if (widget.player.hasNext) {
-      widget.player.seek(Duration.zero, index: widget.player.nextIndex);
-    } else if (qs.list.isNotEmpty) {
-      widget.onGoTo((qs.index + 1) % qs.list.length);
-    }
+    widget.onNext();
     setState(() {});
   }
 
   void _skipPrev() {
-    final qs = widget.queueState;
     _switchDir = -1;
-    if (widget.player.hasPrevious) {
-      widget.player.seek(Duration.zero, index: widget.player.previousIndex);
-    } else if (qs.list.isNotEmpty) {
-      widget.onGoTo((qs.index - 1 + qs.list.length) % qs.list.length);
-    }
+    widget.onPrevious();
     setState(() {});
   }
 
@@ -504,6 +500,10 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
     return Scaffold(
       extendBodyBehindAppBar: true,
       backgroundColor: AppTheme.background,
+      // Sin inputs: si se abre con el teclado aún plegándose (búsqueda
+      // activa), el reencuadre del Scaffold durante esos frames hacía
+      // desbordar la columna fija (aviso amarillo unos frames).
+      resizeToAvoidBottomInset: false,
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(56),
         child: ClipRect(

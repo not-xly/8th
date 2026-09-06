@@ -59,19 +59,22 @@ class AppHeader extends StatelessWidget {
           ),
           child: Row(
             children: [
-              // Liquid glass app icon — dinámico con palette progresiva
+              // Logo de la app (disco 8th) — el fondo sigue el color dinámico
+              // de la app: el asset es el disco blanco con los anillos
+              // perforados, así el color del contenedor asoma por ellos.
               Builder(
                 builder: (context) {
                   final aura = Theme.of(context).colorScheme.primary;
                   return Container(
-                    padding: const EdgeInsets.all(9),
+                    width: 38,
+                    height: 38,
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [aura, aura.withValues(alpha: 0.85)],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                         color: Colors.white.withValues(alpha: 0.12),
                         width: 0.8,
@@ -89,10 +92,12 @@ class AppHeader extends StatelessWidget {
                         ),
                       ],
                     ),
-                    child: const Icon(
-                      Icons.graphic_eq_rounded,
-                      color: Colors.white,
-                      size: 20,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(11.2),
+                      child: Image.asset(
+                        'assets/logo_disc.png',
+                        fit: BoxFit.cover,
+                      ),
                     ),
                   );
                 },
