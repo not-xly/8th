@@ -371,12 +371,59 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
     }
 
     /**
-     * Port of parseMetadata (song_data.dart): content:// passes through;
-     * file paths are filtered by extension and parsed off-thread. Missing or
-     * unreadable files are skipped entirely (no ghost entries).
+     * Port of parseMetadata (song_data.dart): file paths are filtered by
+     * extension and parsed off-thread; content:// URIs also get their tags
+     * read here (the picker fallback saves URIs, not paths, so without this
+     * those libraries would show no artist/album/duration). Missing or
+     * unreadable entries keep the bare Song (no ghost entries).
      */
     suspend fun parseMetadataForPaths(paths: List<String>): List<Song> = withContext(Dispatchers.IO) {
-        parseMetadata(paths) { path -> readSongMetadata(path) }
+        paths.mapNotNull { path ->
+            if (path.startsWith("content://")) {
+                readSongMetadataForUri(path) ?: Song(path = path, contentUri = path)
+            } else {
+                parseMetadata(listOf(path)) { readSongMetadata(it) }.firstOrNull()
+            }
+        }
+    }
+
+    /**
+     * Metadata for one content:// URI; null when unreadable. Open so
+     * tests/fakes can stub the per-URI IO.
+     */
+    open fun readSongMetadataForUri(uriString: String): Song? {
+        val ctx = appContext ?: return null
+        try {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(ctx, Uri.parse(uriString))
+                val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+                val trackRaw = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
+                val durationRaw = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                val name = uriString.substringAfterLast('/')
+                    .substringBefore('?')
+                    .replace(Regex("\\.[^.]+$"), "")
+                return Song(
+                    path = uriString,
+                    contentUri = uriString,
+                    title = title ?: name,
+                    artist = MetadataFixes.artistFor(album = album, artist = artist),
+                    album = album,
+                    trackNumber = trackRaw?.substringBefore('/')?.trim()?.toIntOrNull()?.takeIf { it > 0 },
+                    durationMs = durationRaw?.toLongOrNull()?.takeIf { it > 0 },
+                    albumArt = null,
+                )
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
+            return null
+        }
     }
 
     /**
