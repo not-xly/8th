@@ -426,7 +426,7 @@ private fun SongShowcase(
             Modifier
                 .clip(RoundedCornerShape(8.dp))
                 .clickable(
-                    interactionSource = MutableInteractionSource(),
+                    interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) {
                     onArtistTap(Artists.primaryArtist(song.artist) ?: song.album ?: AppStrings.UNKNOWN)
@@ -487,7 +487,7 @@ private fun PlayPauseButton(
                 )
                 .border(BorderStroke(0.8.dp, Color.White.copy(alpha = 0.14f)), shape)
                 .clickable(
-                    interactionSource = MutableInteractionSource(),
+                    interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onClick,
                 ),

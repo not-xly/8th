@@ -2,6 +2,7 @@ package com.xly.u_8th.data
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.net.toUri
 import com.xly.u_8th.domain.Song
 import com.xly.u_8th.util.fnv1a
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +51,7 @@ class ArtCache(private val context: Context) {
         }
         // Fallback: MediaStore cover URI (readable in-process).
         song.albumArtUri?.takeIf { it.isNotEmpty() }?.let {
-            return@withContext Uri.parse(it)
+            return@withContext it.toUri()
         }
         null
     }

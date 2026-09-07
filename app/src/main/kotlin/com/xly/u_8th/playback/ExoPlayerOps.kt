@@ -2,6 +2,7 @@ package com.xly.u_8th.playback
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -153,7 +154,7 @@ class ExoPlayerOps(
             .setAlbumTitle(song.album ?: AppStrings.UNKNOWN)
             .apply {
                 song.durationMs?.let { setDurationMs(it) }
-                song.albumArtUri?.takeIf { it.isNotEmpty() }?.let { setArtworkUri(Uri.parse(it)) }
+                song.albumArtUri?.takeIf { it.isNotEmpty() }?.let { setArtworkUri(it.toUri()) }
             }
             .build()
         return MediaItem.Builder()

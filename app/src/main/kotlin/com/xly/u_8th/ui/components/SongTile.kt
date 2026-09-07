@@ -1,5 +1,6 @@
 package com.xly.u_8th.ui.components
 
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import android.graphics.BitmapFactory
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -139,7 +140,7 @@ fun SongTile(
                     }
                 )
                 .clickable(
-                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onTap,
                 )
@@ -212,7 +213,7 @@ fun SongTile(
                         .background(Color.White.copy(alpha = 0.06f))
                         .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(10.dp))
                         .clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                         ) { menuOpen = true },
                     contentAlignment = Alignment.Center,

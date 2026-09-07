@@ -515,7 +515,7 @@ fun ArtistSheetForFullPlayer(
                                     RoundedCornerShape(EighthTheme.RadiusM),
                                 )
                                 .clickable(
-                                    interactionSource = MutableInteractionSource(),
+                                    interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
                                 ) {
                                     onDismiss()

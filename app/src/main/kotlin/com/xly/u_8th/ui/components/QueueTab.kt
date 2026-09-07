@@ -1,5 +1,6 @@
 package com.xly.u_8th.ui.components
 
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -132,14 +133,17 @@ private fun QueueList(
 ) {
     val listState = rememberLazyListState()
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffsetY by remember { mutableStateOf(0f) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
     // Movimiento enviado al servicio aún no reflejado en PlayerBus.queue.
     var pendingComp by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val appliedComp = remember { mutableStateOf<Pair<Int, Int>?>(null) }
     // Al llegar la cola reordenada del servicio, compensa la traslación en
     // la misma frame para que la fila siga bajo el dedo (latencia IPC).
     val pending = pendingComp
+    // Deliberate one-frame read while dragging only: keeps the dragged row
+    // under the finger when the reordered queue arrives from the service.
     if (pending != null && pending != appliedComp.value && draggingIndex != null) {
+        // noinspection FrequentlyChangingValue
         val info = listState.layoutInfo
         val step = info.visibleItemsInfo.firstOrNull()?.let { it.size + info.mainAxisItemSpacing } ?: 0
         if (step > 0) {

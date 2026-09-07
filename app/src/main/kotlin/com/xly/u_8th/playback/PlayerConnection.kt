@@ -219,6 +219,9 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         /** Above this, payload switches to URIs (binder transaction limit). */
         private const val MAX_PARCELABLE_SONGS = 400
 
+        // Holds the application context only — never an Activity — so the
+        // static reference cannot leak a UI component.
+        @Suppress("StaticFieldLeak")
         @Volatile
         private var instance: PlayerConnection? = null
 

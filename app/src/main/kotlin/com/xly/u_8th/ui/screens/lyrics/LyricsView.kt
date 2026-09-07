@@ -266,7 +266,7 @@ private fun SyncedLyricsList(
                         .background(lineBg)
                         .border(BorderStroke(0.7.dp, lineBorder), RoundedCornerShape(10.dp))
                         .clickable(
-                            interactionSource = MutableInteractionSource(),
+                            interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                         ) {
                             connection.launch { seekTo(line.timestampMs) }

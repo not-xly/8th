@@ -23,8 +23,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -119,7 +121,7 @@ fun GlassIconButton(
             .background(fill)
             .border(BorderStroke(0.7.dp, border), RoundedCornerShape(radius))
             .clickable(
-                interactionSource = MutableInteractionSource(),
+                interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 enabled = enabled,
                 onClick = onClick,
@@ -153,14 +155,14 @@ fun AquaSlider(
 ) {
     val aura = animatedAura()
     val active = activeColor ?: aura
-    var width by androidx.compose.runtime.remember { mutableStateOf(0f) }
+    var width by androidx.compose.runtime.remember { mutableFloatStateOf(0f) }
     val shape = RoundedCornerShape(2.dp)
 
     fun fractionAt(x: Float): Float = (if (width > 0f) x / width else 0f).coerceIn(0f, 1f)
 
     // Latest fraction seen this gesture: onScrubEnd gets the live value,
     // not the `progress` captured when the callback was created.
-    var latestFraction by androidx.compose.runtime.remember { mutableStateOf(progress) }
+    var latestFraction by androidx.compose.runtime.remember { mutableFloatStateOf(progress) }
 
     fun seekTo(fraction: Float) {
         latestFraction = fraction
@@ -296,7 +298,7 @@ fun GlassNotification(
                     RoundedCornerShape(EighthTheme.RadiusL),
                 )
                 .clickable(
-                    interactionSource = MutableInteractionSource(),
+                    interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) { state.dismiss() }
                 .padding(horizontal = 14.dp, vertical = 12.dp),

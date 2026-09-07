@@ -1,5 +1,6 @@
 package com.xly.u_8th.auto
 
+import androidx.core.net.toUri
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
@@ -53,7 +54,7 @@ class AlbumsScreen(carContext: CarContext) : Screen(carContext) {
 fun Album.loadIcon(): CarIcon? {
     if (artUri.isNullOrEmpty()) return null
     return try {
-        CarIcon.Builder(IconCompat.createWithContentUri(android.net.Uri.parse(artUri))).build()
+        CarIcon.Builder(IconCompat.createWithContentUri(artUri.toUri())).build()
     } catch (_: Exception) {
         null
     }

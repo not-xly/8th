@@ -52,6 +52,7 @@ object PlaybackGraph {
  * shared observable state is published to [PlayerBus] and the car snapshot
  * lives in AutoPlaybackState (via [AutoStateSync]).
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackService : MediaSessionService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -66,15 +67,17 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         // Same channel id/name the previous app used; media3 reuses it when
         // it already exists instead of creating its default "Now playing".
-        runCatching {
-            val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-            val channel = android.app.NotificationChannel(
-                DEFAULT_CHANNEL_ID,
-                "Reproducción de 8th",
-                android.app.NotificationManager.IMPORTANCE_LOW,
-            )
-            channel.description = "Control de reproducción de música"
-            manager.createNotificationChannel(channel)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            runCatching {
+                val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+                val channel = android.app.NotificationChannel(
+                    DEFAULT_CHANNEL_ID,
+                    "Reproducción de 8th",
+                    android.app.NotificationManager.IMPORTANCE_LOW,
+                )
+                channel.description = "Control de reproducción de música"
+                manager.createNotificationChannel(channel)
+            }
         }
         player = ExoPlayer.Builder(this)
             .setAudioAttributes(

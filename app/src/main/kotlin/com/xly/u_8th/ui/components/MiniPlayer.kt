@@ -40,6 +40,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -105,7 +106,7 @@ fun MiniPlayer(
     var scrubRatio by remember { mutableStateOf<Float?>(null) }
     var slideDir by remember { mutableIntStateOf(1) }
     var phase by remember { mutableStateOf(SlidePhase.Idle) }
-    var lastProgressInteractionMs by remember { mutableStateOf(0L) }
+    var lastProgressInteractionMs by remember { mutableLongStateOf(0L) }
 
     val offsetAnim = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val opacityAnim = remember { Animatable(1f) }

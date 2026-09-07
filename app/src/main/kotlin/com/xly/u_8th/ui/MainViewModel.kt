@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Cancel
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -244,9 +245,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun resolveScanPath(treeUri: String): String? = runCatching {
         when {
             treeUri.startsWith("/") -> treeUri
-            treeUri.startsWith("file://") -> Uri.parse(treeUri).path
+            treeUri.startsWith("file://") -> treeUri.toUri().path
             else -> {
-                val uri = Uri.parse(treeUri)
+                val uri = treeUri.toUri()
                 val id = if (uri.scheme == "content") {
                     runCatching { android.provider.DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
                 } else null
@@ -376,7 +377,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val retriever = MediaMetadataRetriever()
             try {
                 if (song.isContentUri) {
-                    retriever.setDataSource(context, Uri.parse(song.playUri))
+                    retriever.setDataSource(context, song.playUri.toUri())
                 } else {
                     retriever.setDataSource(song.playUri)
                 }

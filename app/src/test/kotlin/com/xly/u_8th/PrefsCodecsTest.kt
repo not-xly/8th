@@ -28,11 +28,18 @@ class PrefsCodecsTest {
         assertEquals(listOf("a", "b"), LegacyPrefsCodecs.decodeStringList("$prefix![\"a\",\"b\"]"))
     }
 
+    /** JVM stand-in for android.util.Base64 (only available on a device). */
+    private val jvmBase64: (String) -> ByteArray =
+        { java.util.Base64.getDecoder().decode(it) }
+
     @Test
     fun `decodes a legacy java-serialized list preserving order`() {
         assertEquals(
             listOf("uno", "dos", "tres"),
-            LegacyPrefsCodecs.decodeStringList(legacySerializedValue(listOf("uno", "dos", "tres"))),
+            LegacyPrefsCodecs.decodeStringList(
+                legacySerializedValue(listOf("uno", "dos", "tres")),
+                jvmBase64,
+            ),
         )
     }
 
@@ -55,6 +62,7 @@ class PrefsCodecsTest {
         assertNull(
             LegacyPrefsCodecs.decodeStringList(
                 "$prefix!" + Base64.getEncoder().encodeToString("hello".toByteArray()),
+                jvmBase64,
             )
         )
     }

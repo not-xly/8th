@@ -246,7 +246,7 @@ fun LyricsScreen(nav: NavController) {
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(aura)
                                 .clickable(
-                                    interactionSource = MutableInteractionSource(),
+                                    interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
                                 ) { connection.launch { togglePlay() } },
                             contentAlignment = Alignment.Center,
@@ -282,7 +282,7 @@ private fun PlainControl(
             .size(48.dp)
             .clip(CircleShape)
             .clickable(
-                interactionSource = MutableInteractionSource(),
+                interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick,
             ),

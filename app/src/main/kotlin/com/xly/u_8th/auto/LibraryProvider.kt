@@ -3,6 +3,7 @@ package com.xly.u_8th.auto
 import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
+import androidx.core.net.toUri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -144,7 +145,7 @@ object LibraryProvider {
     }
 
     private fun albumArtUri(albumId: Long): Uri =
-        ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+        ContentUris.withAppendedId("content://media/external/audio/albumart".toUri(), albumId)
 
     private fun readTracks(context: Context): List<Track> {
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

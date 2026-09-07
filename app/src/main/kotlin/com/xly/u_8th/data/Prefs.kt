@@ -1,6 +1,7 @@
 package com.xly.u_8th.data
 
 import android.content.Context
+import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.w3c.dom.Element
@@ -30,11 +31,11 @@ class Prefs(context: Context) {
     }
 
     suspend fun setTreeUri(uri: String) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(KEY_TREE_URI, uri).apply()
+        prefs.edit { putString(KEY_TREE_URI, uri) }
     }
 
     suspend fun clearTreeUri() = withContext(Dispatchers.IO) {
-        prefs.edit().remove(KEY_TREE_URI).apply()
+        prefs.edit { remove(KEY_TREE_URI) }
     }
 
     // ---- file_paths / album_order (ordered lists) ----
@@ -44,7 +45,7 @@ class Prefs(context: Context) {
     }
 
     suspend fun setFilePaths(paths: List<String>) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(KEY_FILE_PATHS, paths.encodeListValue()).apply()
+        prefs.edit { putString(KEY_FILE_PATHS, paths.encodeListValue()) }
     }
 
     suspend fun getAlbumOrder(): List<String> = withContext(Dispatchers.IO) {
@@ -52,7 +53,7 @@ class Prefs(context: Context) {
     }
 
     suspend fun saveAlbumOrder(order: List<String>) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(KEY_ALBUM_ORDER, order.encodeListValue()).apply()
+        prefs.edit { putString(KEY_ALBUM_ORDER, order.encodeListValue()) }
     }
 
     private fun List<String>.encodeListValue(): String = joinToString("\n")
@@ -84,20 +85,20 @@ class Prefs(context: Context) {
         } finally {
             // Always flag it: a half-failed migration must not retry on
             // every start (imports are missing-key-only, so idempotent).
-            prefs.edit().putBoolean(KEY_MIGRATED, true).apply()
+            prefs.edit { putBoolean(KEY_MIGRATED, true) }
         }
     }
 
     private fun importString(values: Map<String, String>, legacyKey: String, key: String) {
         val value = values[legacyKey] ?: return
-        if (!prefs.contains(key)) prefs.edit().putString(key, value).apply()
+        if (!prefs.contains(key)) prefs.edit { putString(key, value) }
     }
 
     private fun importList(values: Map<String, String>, legacyKey: String, key: String) {
         val raw = values[legacyKey] ?: return
         if (prefs.contains(key)) return
         val decoded = LegacyPrefsCodecs.decodeStringList(raw) ?: return
-        prefs.edit().putString(key, decoded.encodeListValue()).apply()
+        prefs.edit { putString(key, decoded.encodeListValue()) }
     }
 
     /** Reads the `<string name="...">value</string>` entries of a prefs XML. */
@@ -136,7 +137,23 @@ object LegacyPrefsCodecs {
     const val LIST_PREFIX = "VGhpcyBpcyB0aGUgcHJlZml4IGZvciBhIGxpc3Qu"
 
     /** Decodes a legacy list value; null when [raw] is not a valid one. */
-    fun decodeStringList(raw: String): List<String>? = try {
+    /**
+     * Base64 decoder seam. Production uses android.util.Base64 (available on
+     * every supported API; java.util.Base64 needs API 26). JVM tests inject
+     * java.util.Base64 to exercise the same paths.
+     */
+    var base64Decode: (String) -> ByteArray? = { payload ->
+        try {
+            android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun decodeStringList(
+        raw: String,
+        base64: (String) -> ByteArray? = base64Decode,
+    ): List<String>? = try {
         if (!raw.startsWith(LIST_PREFIX)) {
             null
         } else {
@@ -145,7 +162,11 @@ object LegacyPrefsCodecs {
                 null
             } else {
                 val payload = rest.substring(1)
-                if (payload.startsWith("[")) parseJsonStringArray(payload) else javaSerializedList(payload)
+                if (payload.startsWith("[")) {
+                    parseJsonStringArray(payload)
+                } else {
+                    javaSerializedList(payload, base64)
+                }
             }
         }
     } catch (_: Throwable) {
@@ -216,8 +237,8 @@ object LegacyPrefsCodecs {
         }
     }
 
-    private fun javaSerializedList(payload: String): List<String>? {
-        val bytes = java.util.Base64.getDecoder().decode(payload)
+    private fun javaSerializedList(payload: String, base64: (String) -> ByteArray?): List<String>? {
+        val bytes = base64(payload) ?: return null
         java.io.ObjectInputStream(bytes.inputStream()).use { stream ->
             val list = stream.readObject() as? List<*> ?: return null
             return list.map { it as? String ?: return null }

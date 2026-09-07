@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.core.net.toUri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.MediaStore
@@ -139,9 +140,9 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
     private fun resolveFolderPath(treeUri: String): String? = try {
         when {
             treeUri.startsWith("/") -> treeUri
-            treeUri.startsWith("file://") -> Uri.parse(treeUri).path
+            treeUri.startsWith("file://") -> treeUri.toUri().path
             else -> {
-                val uri = Uri.parse(treeUri)
+                val uri = treeUri.toUri()
                 val id = if (uri.scheme == "content") {
                     try {
                         DocumentsContract.getTreeDocumentId(uri)
@@ -250,7 +251,7 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
                         // cheaper than querying the Albums table per row.
                         artUri = albumId?.let {
                             ContentUris.withAppendedId(
-                                Uri.parse("content://media/external/audio/albumart"),
+                                "content://media/external/audio/albumart".toUri(),
                                 it,
                             ).toString()
                         },
@@ -264,7 +265,7 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
 
     private fun listFromSAF(treeUri: String): List<SongMedia> {
         val resolver = appContext?.contentResolver ?: return emptyList()
-        val uri = Uri.parse(treeUri)
+        val uri = treeUri.toUri()
         try {
             // Persistable permission budget is limited: take it only once.
             val alreadyPersisted = resolver.persistedUriPermissions.any {
@@ -401,7 +402,7 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
         try {
             val retriever = MediaMetadataRetriever()
             try {
-                retriever.setDataSource(ctx, Uri.parse(uriString))
+                retriever.setDataSource(ctx, uriString.toUri())
                 val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
                 val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
                 val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
