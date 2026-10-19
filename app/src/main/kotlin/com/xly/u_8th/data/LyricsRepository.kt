@@ -1,161 +1,30 @@
 package com.xly.u_8th.data
 
 import android.content.Context
-import android.util.Log
 import com.xly.u_8th.domain.Song
-import com.xly.u_8th.util.fnv1aHex
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import okhttp3.FormBody
-import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
-import java.io.IOException
-import java.util.concurrent.TimeUnit
-import kotlin.math.abs
-
-/**
- * Pure (context-free) lyrics logic, split from [LyricsRepository] so the JVM
- * test suite can exercise naming, cleaning and LRC parsing without Android.
- */
-object LrcLogic {
-
-    // ---- File name scheme (must stay identical to the previous app version so
-    // existing .lrc files keep matching) ----
-
-    /** Removes filename-illegal characters, collapses whitespace, caps at 80 chars. */
-    fun sanitize(s: String): String {
-        var r = s.replace(Regex("""[\\/:*?"<>|]"""), "_").trim()
-        r = r.replace(Regex("""\s+"""), " ").trim()
-        if (r.isEmpty()) return "unknown"
-        if (r.length > 80) r = r.substring(0, 80)
-        return r
-    }
-
-    /** "a/b/c.ext" -> "c" (no extension, leading-dot files kept whole). */
-    private fun baseWithoutExtension(raw: String): String {
-        val base = raw.substringAfterLast('/')
-        val dot = base.lastIndexOf('.')
-        return if (dot <= 0) base else base.substring(0, dot)
-    }
-
-    fun baseNameFor(song: Song): String {
-        val display = song.displayTitle.trim()
-        val artist = (song.artist ?: "").trim()
-        val base = when {
-            artist.isNotEmpty() && display.isNotEmpty() -> "${sanitize(artist)} - ${sanitize(display)}"
-            display.isNotEmpty() -> sanitize(display)
-            else -> sanitize(baseWithoutExtension(song.filePath ?: song.path))
-        }
-        // Short stable hash avoids collisions (same title/artist on different files).
-        return "${base}_${fnv1aHex(song.path)}"
-    }
-
-    // ---- Title/artist cleaning for search ----
-
-    private val FEAT_IN_TITLE = Regex(
-        pattern = """\s*(?:[\(\[\{]\s*)?(?:feat\.?|ft\.?|featuring)\b[^\)\]\}]*[\)\]\}]?\s*$""",
-        option = RegexOption.IGNORE_CASE,
-    )
-    private val NOISE_TAG = Regex(
-        pattern = """(remaster|remastered|live|acoustic|instrumental|version|edit|mix|remix|deluxe|bonus|anniversary|mono|stereo|karaoke|demo)""",
-        option = RegexOption.IGNORE_CASE,
-    )
-    private val BRACKET_GROUP = Regex("""[\(\[\{][^\)\]\}]*[\)\]\}]""")
-    private val DASH_SUFFIX = Regex(
-        pattern = """\s*[-–—]\s*(?:remaster(?:ed)?\b|live\b|\S*\s?(?:version|edit|mix)\b).*$""",
-        option = RegexOption.IGNORE_CASE,
-    )
-    private val WHITESPACE_RUN = Regex("""\s+""")
-    private val EDGE_DASH = Regex("""^[-–—·]+\s*|\s*[-–—·]+$""")
-
-    fun squash(s: String): String =
-        s.replace(WHITESPACE_RUN, " ").trim().replace(EDGE_DASH, "")
-
-    /** Strips "feat. X" and noise tags in brackets ("(Remastered 2011)", "[Live]", "- Radio Edit"). */
-    fun cleanTitle(raw: String): String {
-        var t = raw.trim()
-        t = FEAT_IN_TITLE.replaceFirst(t, " ")
-        var changed = true
-        var guard = 0
-        while (changed && guard++ < 10) {
-            changed = false
-            // Reverse order so replacing one group does not shift earlier ranges.
-            for (g in BRACKET_GROUP.findAll(t).toList().asReversed()) {
-                if (NOISE_TAG.containsMatchIn(g.value)) {
-                    t = t.replaceRange(g.range, " ")
-                    changed = true
-                }
-            }
-            val t2 = DASH_SUFFIX.replaceFirst(t, " ")
-            if (t2 != t) {
-                t = t2
-                changed = true
-            }
-        }
-        val cleaned = squash(t)
-        return cleaned.ifEmpty { raw.trim() }
-    }
-
-    /** First primary artist ("A, B & C feat. D" -> "A"); respects "Tyler, The Creator". */
-    fun cleanArtist(raw: String): String = Artists.primaryArtist(raw) ?: raw.trim()
-
-    // ---- Fuzzy matching (normalized contains) ----
-
-    fun normForMatch(s: String): String =
-        s.lowercase().replace(Regex("""[^a-z0-9\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]"""), "")
-
-    fun fuzzyContains(haystack: String, needle: String): Boolean {
-        val n = normForMatch(needle)
-        if (n.isEmpty()) return true
-        val h = normForMatch(haystack)
-        return h.isNotEmpty() && h.contains(n)
-    }
-
-    // ---- LRC parsing ----
-
-    private val LRC_TIMESTAMP = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]""")
-    private val TAG_LINE = Regex("""^\[(ti|ar|al|by|offset):""", RegexOption.IGNORE_CASE)
-
-    /** Supports multiple timestamps per line and [mm:ss.xx]; returns lines sorted by time. */
-    fun parseLrc(content: String): List<LrcLine> {
-        val lines = mutableListOf<LrcLine>()
-        for (rawLine in content.split('\n')) {
-            val line = rawLine.trim()
-            if (line.isEmpty()) continue
-            if (TAG_LINE.containsMatchIn(line)) continue
-            val matches = LRC_TIMESTAMP.findAll(line).toList()
-            if (matches.isEmpty()) continue
-            val text = line.replace(LRC_TIMESTAMP, "").trim()
-            if (text.isEmpty()) continue
-            for (m in matches) {
-                val min = m.groupValues[1].toIntOrNull() ?: 0
-                val sec = m.groupValues[2].toIntOrNull() ?: 0
-                val frac = m.groupValues[3]
-                val millis = when (frac.length) {
-                    1 -> frac.toLong() * 100
-                    2 -> frac.toLong() * 10
-                    3 -> frac.toLong()
-                    else -> 0L
-                }
-                lines.add(LrcLine(timestampMs = (min * 60 + sec) * 1000L + millis, text = text))
-            }
-        }
-        lines.sortBy { it.timestampMs }
-        return lines
-    }
-
-    /** Plain (unsynced) lyrics: every non-empty line becomes a line at timestamp 0. */
-    fun plainLines(content: String): List<LrcLine> =
-        content.split('\n')
-            .filter { it.trim().isNotEmpty() }
-            .map { LrcLine(0, it.trim()) }
-}
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Prefs access for [LyricsRepository]; faked in tests. */
 interface LrcPrefs {
@@ -163,62 +32,81 @@ interface LrcPrefs {
     fun filePaths(): List<String>?
 }
 
-/** Default [LrcPrefs] over SharedPreferences ("eighth_prefs"); paths joined with '\n'. */
-class SharedPreferencesLrcPrefs(context: Context) : LrcPrefs {
-    private val prefs = context.getSharedPreferences("eighth_prefs", Context.MODE_PRIVATE)
+/** Default [LrcPrefs] over [Prefs] (sin duplicar nombres de claves ni formato). */
+class SharedPreferencesLrcPrefs(private val prefs: Prefs) : LrcPrefs {
+    override fun treeUri(): String? = prefs.getTreeUri()
 
-    override fun treeUri(): String? = prefs.getString("tree_uri", null)
-
-    override fun filePaths(): List<String>? =
-        prefs.getString("file_paths", null)?.split('\n')?.filter { it.isNotEmpty() }
+    override fun filePaths(): List<String>? = prefs.getFilePaths()
 }
 
 /**
- * Lyrics source + cache: resolves the .lrc directory, parses LRC,
- * fetches lyrics (lrclib.net -> NetEase -> lyrics.ovh) and bulk-syncs the library.
+ * Letras en disco: resuelve la carpeta .lrc, lee/guarda/importa ficheros,
+ * gestiona el desfase y orquesta la descarga ([LyricsFetcher]) y la
+ * sincronización masiva de la biblioteca. El parseo vive en [LrcLogic].
  */
-class LyricsRepository(private val context: Context, private val prefs: LrcPrefs) {
+class LyricsRepository(
+    private val context: Context?,
+    private val prefs: LrcPrefs,
+    directory: File? = null,
+    client: OkHttpClient = LyricsHttp.DefaultClient,
+) {
+    private companion object {
+        /** Techo global por canción: 7 fuentes x 4 intentos se eternizan. */
+        const val FETCH_TIMEOUT_MS = 90_000L
+        const val INTERACTIVE_TIMEOUT_MS = 20_000L
 
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .build()
+        /** Tras un fallo, no se reintenta automáticamente durante este tiempo. */
+        const val MISS_TTL_MS = 30 * 60_000L
+
+        /** Descargas simultáneas de la sincronización masiva. */
+        const val SYNC_WORKERS = 4
+
+        /**
+         * Ritmo global de la sincronización: un INICIO de
+         * descarga cada 350 ms (el mismo throttle que la
+         * versión secuencial; la latencia de red ya no
+         * serializa las descargas).
+         */
+        const val SYNC_THROTTLE_MS = 350L
+
+        /** Fallos seguidos sin éxito que abortan la sincronización. */
+        const val SYNC_MISS_LIMIT = 15
     }
-
-    private var cachedDir: File? = null
+    private val fetcher = LyricsFetcher(LyricsHttp(client))
+    private val interactiveFetcher = LyricsFetcher(
+        LyricsHttp(client, LyricsHttp.INTERACTIVE_RETRIES_MS),
+        parallel = true,
+    )
+    private val directoryLock = Mutex()
+    private var cachedDir: File? = directory
     private var triedMusicDir = false
 
-    private fun lrcLog(message: String) {
-        runCatching { Log.d("LRC", message) }
-    }
+    /**
+     * Un mutex por canción, no 64 globales: el bucketing por
+     * `String.hashCode` colapsaba casi todos los `content://.../media/<id>`
+     * en el mismo cubo (mismo prefijo) y serializaba la sincronización
+     * masiva. Además el mutex se toma **antes** de las 7 peticiones con
+     * reintentos, así que una colisión bloqueaba hasta ~60 s.
+     * Confinado a [directoryLock]: `songLocks` solo crece con canciones
+     * vistas, y cada entrada se elimina al terminar.
+     */
+    private val songLocks = HashMap<String, Mutex>()
 
-    // ---- HTTP with retry (network error / timeout / 429 / 5xx, 600ms -> 1.2s -> 2.4s) ----
-
-    private val retryDelaysMs = longArrayOf(600, 1200, 2400)
-
-    /** Returns null when the attempts are exhausted. */
-    private suspend fun lrcRequest(label: String, request: () -> Response): Response? {
-        var attempt = 0
-        while (true) {
-            try {
-                val res = withContext(Dispatchers.IO) { request() }
-                if ((res.code == 429 || res.code >= 500) && attempt < retryDelaysMs.size) {
-                    lrcLog("$label ${res.code}, retry ${attempt + 1}")
-                    delay(retryDelaysMs[attempt])
-                    attempt++
-                    continue
-                }
-                return res
-            } catch (e: IOException) {
-                if (attempt >= retryDelaysMs.size) {
-                    lrcLog("$label definitive error: $e")
-                    return null
-                }
-                lrcLog("$label error ($e), retry ${attempt + 1}")
-                delay(retryDelaysMs[attempt])
-                attempt++
-            }
+    private suspend fun <T> withSongLock(song: Song, block: suspend () -> T): T {
+        val key = song.path
+        val mutex = directoryLock.withLock {
+            songLocks.getOrPut(key) { Mutex() }
+        }
+        try {
+            return mutex.withLock { block() }
+        } finally {
+            // NonCancellable: si el job ya está cancelado y el lock está
+            // ocupado, `withLock` lanzaría y la entrada quedaría para siempre.
+            withContext(NonCancellable) { directoryLock.withLock {
+                // Solo se libera si el mutex sigue libre: alguien más pudo
+                // tomar esta misma instancia mientras trabajábamos dentro.
+                if (songLocks[key] === mutex && !mutex.isLocked) songLocks.remove(key)
+            } }
         }
     }
 
@@ -228,30 +116,32 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
 
     /**
      * Resolves the 8th_lrc directory with cache. Priority: music folder from
-     * prefs (write-probed ONCE, failure remembered so scoped storage is not
+     * prefs (write-probed once, failure remembered so scoped storage is not
      * re-probed per song) -> app-specific external dir -> legacy internal
-     * internal dir when present (data compatibility) -> filesDir.
+     * dir when present (data compatibility) -> filesDir.
+     *
+     * The probe latch is released if the cached directory disappears (SD
+     * unmounted, app data cleared): probing once per process was enough to
+     * pin the app to a fallback the user cannot find, and to make existing
+     * letters in the music folder invisible.
      */
-    suspend fun getLrcDir(): File = withContext(Dispatchers.IO) {
+    suspend fun getLrcDir(): File = directoryLock.withLock { resolveLrcDir() }
+
+    private suspend fun resolveLrcDir(): File = withContext(Dispatchers.IO) {
         cachedDir?.takeIf { it.exists() }?.let { return@withContext it }
+        if (cachedDir != null) triedMusicDir = false
 
         if (!triedMusicDir) {
             var musicDir: String? = null
             try {
                 val treeUri = prefs.treeUri()
                 if (!treeUri.isNullOrEmpty()) {
-                    if (treeUri.startsWith("/")) {
-                        if (File(treeUri).isDirectory) {
-                            musicDir = treeUri
-                        } else {
-                            val cleaned = treeUri.replaceFirst("file://", "")
-                            if (File(cleaned).isDirectory) musicDir = cleaned
-                        }
-                    } else if (treeUri.startsWith("file://")) {
-                        val cleaned = treeUri.replaceFirst("file://", "")
-                        if (File(cleaned).isDirectory) musicDir = cleaned
+                    // content:// no es escribible como File plano -> fallback
+                    // de abajo. Ambas ramas ^(file://)?(/\.\..*) convergen.
+                    val asPath = treeUri.removePrefix("file://")
+                    if (asPath.startsWith("/") && File(asPath).isDirectory) {
+                        musicDir = asPath
                     }
-                    // content:// is not writable as a plain File -> fallback below.
                 }
                 if (musicDir == null) {
                     val filePaths = prefs.filePaths()
@@ -292,7 +182,7 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
 
         // Fallback 2: app-specific external dir (no permission needed).
         try {
-            val ext = context.getExternalFilesDir(null)
+            val ext = context?.getExternalFilesDir(null)
             if (ext != null) {
                 val extLrc = File(ext, lrcFolderName)
                 if (!extLrc.exists()) extLrc.mkdirs()
@@ -304,12 +194,14 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
 
         // Fallback 3: reuse the previous app version's internal dir when it exists,
         // otherwise the native equivalent (filesDir).
-        val legacy = File(File(context.dataDir, "app_flutter"), lrcFolderName)
-        if (legacy.exists()) {
+        val legacy = context?.dataDir?.let { File(File(it, "app_flutter"), lrcFolderName) }
+        if (legacy != null && legacy.exists()) {
             cachedDir = legacy
             return@withContext legacy
         }
-        val fallback = File(context.filesDir, lrcFolderName)
+        // Sin Context (solo en tests JVM) se cae al directorio temporal del sistema.
+        val baseDir = context?.filesDir ?: File(System.getProperty("java.io.tmpdir") ?: ".")
+        val fallback = File(baseDir, lrcFolderName)
         if (!fallback.exists()) fallback.mkdirs()
         cachedDir = fallback
         fallback
@@ -319,15 +211,6 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
         File(getLrcDir(), "${LrcLogic.baseNameFor(song)}.lrc")
 
     // ---- Cache presence ----
-
-    suspend fun hasLrc(song: Song): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val f = lrcFileFor(song)
-            f.exists() && f.length() > 0
-        } catch (_: Exception) {
-            false
-        }
-    }
 
     /** Lists existing .lrc names (lowercase) ONCE so presence checks are O(1) per song. */
     suspend fun cachedLrcNames(): MutableSet<String> = withContext(Dispatchers.IO) {
@@ -339,281 +222,45 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
                     if (e.isFile && e.path.lowercase().endsWith(".lrc")) names.add(e.name.lowercase())
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
         }
         names
     }
 
-    fun hasLrcIn(names: Set<String>, song: Song): Boolean =
-        names.contains("${LrcLogic.baseNameFor(song).lowercase()}.lrc")
+    fun hasLrcIn(names: Set<String>, song: Song): Boolean {
+        // El set lo comparten los workers de syncMissing: lectura
+        // y escritura concurrentes sobre un HashSet no son seguras.
+        val key = "${LrcLogic.baseNameFor(song).lowercase()}.lrc"
+        return synchronized(names) { names.contains(key) }
+    }
 
     /** Registers a freshly saved .lrc so it is not re-checked on disk. */
     fun registerLrcSaved(names: MutableSet<String>, song: Song) {
-        names.add("${LrcLogic.baseNameFor(song).lowercase()}.lrc")
+        val key = "${LrcLogic.baseNameFor(song).lowercase()}.lrc"
+        synchronized(names) { names.add(key) }
     }
 
     // ---- Loading ----
 
     suspend fun loadLrc(song: Song): List<LrcLine>? = withContext(Dispatchers.IO) {
+        currentCoroutineContext().ensureActive()
         try {
             val file = lrcFileFor(song)
             if (!file.exists()) return@withContext null
             val content = file.readText()
+            currentCoroutineContext().ensureActive()
             if (content.trim().isEmpty()) return@withContext null
-            val parsed = LrcLogic.parseLrc(content)
+            val parsed = LrcLogic.parseLrc(content, applyOffsetTag = true)
+            currentCoroutineContext().ensureActive()
             if (parsed.isEmpty()) {
                 // Plain lyrics without timestamps -> unsynced lines (timestamp 0).
                 return@withContext LrcLogic.plainLines(content).ifEmpty { null }
             }
             parsed
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    // ---- Fetching (lrclib.net -> NetEase -> lyrics.ovh) ----
-
-    private fun optStringField(o: JSONObject, key: String): String? =
-        if (o.has(key) && !o.isNull(key)) o.optString(key) else null
-
-    private fun jsonOrNull(body: String?): JSONObject? {
-        if (body == null) return null
-        return try { JSONObject(body) } catch (_: Exception) { null }
-    }
-
-    private fun arrayOrNull(body: String?): JSONArray? {
-        if (body == null) return null
-        return try { JSONArray(body) } catch (_: Exception) { null }
-    }
-
-    private suspend fun lrclibGet(label: String, url: String): Pair<Int, String?>? {
-        val res = lrcRequest(label) {
-            client.newCall(
-                Request.Builder().url(url).header("User-Agent", "8th/1.0").build()
-            ).execute()
-        } ?: return null
-        return res.code to res.body?.string()
-    }
-
-    private suspend fun tryGet(params: Map<String, String>): String? {
-        return try {
-            val url = HttpUrl.Builder()
-                .scheme("https")
-                .host("lrclib.net")
-                .addPathSegments("api/get")
-                .apply { params.forEach { (k, v) -> addQueryParameter(k, v) } }
-                .build()
-            val (code, body) = lrclibGet("tryGet", url.toString()) ?: return null
-            if (code == 200) {
-                val json = jsonOrNull(body)
-                if (json != null) {
-                    val synced = optStringField(json, "syncedLyrics")
-                    if (synced != null && synced.trim().isNotEmpty()) return synced
-                    val plain = optStringField(json, "plainLyrics")
-                    if (plain != null && plain.trim().isNotEmpty()) return plain
-                }
-            }
-            null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private suspend fun trySearchParams(artistName: String, trackName: String, durationSec: Int?): String? {
-        return try {
-            val q = (if (artistName.isNotEmpty()) "$artistName $trackName" else trackName).trim()
-            val url = HttpUrl.Builder()
-                .scheme("https")
-                .host("lrclib.net")
-                .addPathSegments("api/search")
-                .addQueryParameter("q", q)
-                .apply {
-                    if (artistName.isNotEmpty()) addQueryParameter("artist_name", artistName)
-                    if (trackName.isNotEmpty()) addQueryParameter("track_name", trackName)
-                }
-                .build()
-            val (code, body) = lrclibGet("trySearch", url.toString()) ?: return null
-            if (code != 200) return null
-            val decoded = arrayOrNull(body) ?: return null
-            val items = (0 until decoded.length()).mapNotNull { decoded.optJSONObject(it) }
-            if (items.isEmpty()) return null
-            fun durOk(item: JSONObject): Boolean {
-                val d = if (item.has("duration") && !item.isNull("duration")) item.optLong("duration").toInt() else null
-                return durationSec == null || d == null || abs(d - durationSec) <= 3
-            }
-            // Title-only mode demands an approximate duration to avoid another song.
-            val candidates =
-                if (artistName.isEmpty() && durationSec != null) items.filter { durOk(it) } else items
-            for (item in candidates) {
-                val synced = optStringField(item, "syncedLyrics")
-                if (synced != null && synced.trim().isNotEmpty()) return synced
-            }
-            for (item in candidates) {
-                val plain = optStringField(item, "plainLyrics")
-                if (plain != null && plain.trim().isNotEmpty()) return plain
-            }
-            null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Full cascade:
-     * 1) lrclib /api/get with raw artist/track (+album/duration)
-     * 2) lrclib /api/get with cleaned artist/track
-     * 3) lrclib /api/search with raw data
-     * 4) lrclib /api/search with cleaned data; 5) title-only search
-     * 6) NetEase; 7) lyrics.ovh.
-     */
-    suspend fun fetchSyncedLyrics(song: Song): String? {
-        val artist = (song.artist ?: "").trim()
-        val title = song.displayTitle.trim()
-        if (title.isEmpty()) return null
-        val album = (song.album ?: "").trim()
-        val durationSec: Int? = song.durationMs?.let { Math.round(it / 1000.0).toInt() }
-
-        // 1) Exact attempt only with an artist (lrclib /get requires both).
-        if (artist.isNotEmpty()) {
-            val getParams = buildMap<String, String> {
-                put("artist_name", artist)
-                put("track_name", title)
-                if (album.isNotEmpty()) put("album_name", album)
-                if (durationSec != null) put("duration", durationSec.toString())
-            }
-            tryGet(getParams)?.let { return it }
-            tryGet(mapOf("artist_name" to artist, "track_name" to title))?.let { return it }
-        }
-
-        // 2) Exact attempt with cleaned title/artist (no remaster, feat, etc.).
-        val normTitle = LrcLogic.cleanTitle(title)
-        val normArtist = if (artist.isEmpty()) "" else LrcLogic.cleanArtist(artist)
-        if (normArtist.isNotEmpty() && (normTitle != title || normArtist != artist)) {
-            tryGet(mapOf("artist_name" to normArtist, "track_name" to normTitle))?.let { return it }
-        }
-
-        // 3) Search with raw data.
-        trySearchParams(artist, title, durationSec)?.let { return it }
-
-        // 4) Search with cleaned data; 5) title-only (for mislabeled artists).
-        if (normTitle != title || (normArtist.isNotEmpty() && normArtist != artist)) {
-            trySearchParams(normArtist, normTitle, durationSec)?.let { return it }
-            trySearchParams("", normTitle, durationSec)?.let { return it }
-        }
-
-        // 6) NetEase (synced LRC, good international coverage).
-        fetchFromNetease(normArtist, normTitle, durationSec)?.let { return it }
-
-        // 7) Secondary fallback: lyrics.ovh (plain).
-        return fetchFromLyricsOvh(song)
-    }
-
-    private suspend fun fetchFromNetease(artist: String, title: String, durationSec: Int?): String? {
-        if (title.isEmpty()) return null
-        val userAgent = "Mozilla/5.0 (X11; Linux x86_64) 8th/1.0"
-        return try {
-            val q = listOf(artist, title).filter { it.isNotEmpty() }.joinToString(" ")
-            val searchRes = lrcRequest("netease search") {
-                val form = FormBody.Builder()
-                    .add("s", q)
-                    .add("type", "1")
-                    .add("limit", "10")
-                    .add("offset", "0")
-                    .build()
-                client.newCall(
-                    Request.Builder()
-                        .url("https://music.163.com/api/search/get")
-                        .post(form)
-                        .header("User-Agent", userAgent)
-                        .header("Referer", "https://music.163.com")
-                        .build()
-                ).execute()
-            } ?: return null
-            if (searchRes.code != 200) return null
-            val root = jsonOrNull(searchRes.body?.string()) ?: return null
-            val songs = root.optJSONObject("result")?.optJSONArray("songs") ?: return null
-            if (songs.length() == 0) return null
-
-            var best: JSONObject? = null
-            var bestScore = -1
-            for (i in 0 until songs.length()) {
-                val s = songs.optJSONObject(i) ?: continue
-                val name = optStringField(s, "name") ?: ""
-                val artistsArr = s.optJSONArray("artists")
-                val artists = buildList {
-                    if (artistsArr != null) {
-                        for (j in 0 until artistsArr.length()) {
-                            add(optStringField(artistsArr.optJSONObject(j) ?: continue, "name") ?: "")
-                        }
-                    }
-                }.joinToString(", ")
-                if (!LrcLogic.fuzzyContains(name, title)) continue
-                if (artist.isNotEmpty() && !LrcLogic.fuzzyContains(artists, artist)) continue
-                var score = 0
-                val dMs = if (s.has("duration") && !s.isNull("duration")) s.optLong("duration") else null
-                if (durationSec != null && dMs != null) {
-                    val diff = abs(dMs / 1000.0 - durationSec)
-                    if (diff <= 3) {
-                        score += 2
-                    } else if (diff <= 8) {
-                        score += 1
-                    }
-                }
-                if (score > bestScore) {
-                    bestScore = score
-                    best = s
-                }
-            }
-            val winner = best ?: return null
-            val id = winner.opt("id") ?: return null
-            val lyricRes = lrcRequest("netease lyric") {
-                client.newCall(
-                    Request.Builder()
-                        .url("https://music.163.com/api/song/lyric?id=$id&lv=1&kv=1&tv=-1")
-                        .header("User-Agent", userAgent)
-                        .header("Referer", "https://music.163.com")
-                        .build()
-                ).execute()
-            } ?: return null
-            if (lyricRes.code != 200) return null
-            val lyric = jsonOrNull(lyricRes.body?.string())
-                ?.optJSONObject("lrc")
-                ?.let { optStringField(it, "lyric") }
-            val trimmed = lyric?.trim()
-            // "纯音乐" = instrumental track, not lyrics.
-            if (!trimmed.isNullOrEmpty() && !trimmed.contains("纯音乐")) trimmed else null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private suspend fun fetchFromLyricsOvh(song: Song): String? {
-        val rawArtist = (song.artist ?: "").trim()
-        val title = song.displayTitle.trim()
-        if (rawArtist.isEmpty() || title.isEmpty()) return null
-        val artist = LrcLogic.cleanArtist(rawArtist)
-        if (artist.isEmpty()) return null
-        return try {
-            val url = HttpUrl.Builder()
-                .scheme("https")
-                .host("api.lyrics.ovh")
-                .addPathSegment("v1")
-                .addPathSegment(artist)
-                .addPathSegment(title)
-                .build()
-            val res = lrcRequest("ovh") {
-                client.newCall(
-                    Request.Builder().url(url).header("User-Agent", "8th/1.0").build()
-                ).execute()
-            } ?: return null
-            if (res.code == 200) {
-                val lyrics = jsonOrNull(res.body?.string())
-                    ?.let { optStringField(it, "lyrics") }
-                    ?.trim()
-                if (!lyrics.isNullOrEmpty()) lyrics else null
-            } else {
-                null
-            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -621,17 +268,176 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
 
     // ---- Save / purge / sync ----
 
-    suspend fun fetchAndSave(song: Song): Boolean = withContext(Dispatchers.IO) {
+    private fun validatedLrc(text: String): String? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        if (LrcLogic.parseLrc(trimmed).isNotEmpty()) return trimmed
+        return if (LrcLogic.plainLines(trimmed).isNotEmpty()) trimmed else null
+    }
+
+    private suspend fun writeAtomic(file: File, content: String): Boolean = withContext(Dispatchers.IO) {
+        currentCoroutineContext().ensureActive()
         try {
-            if (hasLrc(song)) return@withContext true
-            val content = fetchSyncedLyrics(song)
-            if (content == null || content.trim().isEmpty()) return@withContext false
-            val file = lrcFileFor(song)
-            file.writeText(content)
-            true
+            file.parentFile?.mkdirs()
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            try {
+                tmp.writeText(content)
+                currentCoroutineContext().ensureActive()
+                when {
+                    tmp.renameTo(file) -> true
+                    file.exists() && !file.delete() -> false
+                    else -> tmp.renameTo(file)
+                }
+            } finally {
+                if (tmp.exists()) runCatching { tmp.delete() }
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             false
         }
+    }
+
+    /**
+     * Manual-control API: validates and saves [text] as the song's lyrics
+     * ([offset:] tag allowed; timestamps or plain text). False when empty or
+     * not lyrics-like.
+     */
+    suspend fun importLrc(song: Song, text: String): Boolean {
+        currentCoroutineContext().ensureActive()
+        val content = validatedLrc(text) ?: return false
+        return withSongLock(song) { writeAtomic(lrcFileFor(song), content) }
+    }
+
+    /** Manual-control API: persisted per-song sync offset in ms from the .lrc [offset:] tag. */
+    suspend fun getOffsetMs(song: Song): Long = withContext(Dispatchers.IO) {
+        try {
+            offsetTagFrom(fileHeader(lrcFileFor(song)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    /** Manual-control API: persists [offsetMs] as the .lrc [offset:] tag (0 removes it). */
+    suspend fun setOffsetMs(song: Song, offsetMs: Long): Unit = withContext(Dispatchers.IO) {
+        currentCoroutineContext().ensureActive()
+        try {
+            // Bajo el lock de la canción: una descarga/importación simultánea
+            // podía reescribir el fichero entre la lectura y la escritura.
+            withSongLock(song) {
+                val file = lrcFileFor(song)
+                if (file.exists()) {
+                    val content = file.readText()
+                    val updated = rewriteOffsetTag(content, offsetMs)
+                    if (updated != content) writeAtomic(file, updated)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+        }
+        Unit
+    }
+
+    // Patrones del tag [offset:] compilados una sola vez: se ejecutan por cada
+    // canción en cada pasada de sincronización.
+    private val OFFSET_TAG_FIND =
+        Regex("""^\s*\[offset:\s*([+-]?\d+)\s*\]""", RegexOption.IGNORE_CASE)
+    private val OFFSET_TAG_REMOVE = Regex("""(?im)^\s*\[offset:\s*[+-]?\d+\s*\]\s*\r?\n?""")
+    private val OFFSET_TAG_REPLACE = Regex("""(?im)^(\s*)\[offset:\s*[+-]?\d+\s*\](.*)$""")
+
+    internal fun offsetTagFrom(content: String): Long {
+        val m = OFFSET_TAG_FIND.find(content) ?: return 0L
+        return m.groupValues[1].toLongOrNull() ?: 0L
+    }
+
+    internal fun rewriteOffsetTag(content: String, offsetMs: Long): String {
+        if (offsetMs == 0L) {
+            return content.replace(OFFSET_TAG_REMOVE, "")
+        }
+        val tag = if (offsetMs > 0) "[offset:+$offsetMs]" else "[offset:$offsetMs]"
+        return if (OFFSET_TAG_REPLACE.containsMatchIn(content)) {
+            content.replace(OFFSET_TAG_REPLACE) { mr -> mr.groupValues[1] + tag + mr.groupValues[2] }
+        } else {
+            tag + (if (content.startsWith("\n") || content.isEmpty()) "" else "\n") + content
+        }
+    }
+
+    private fun fileHeader(file: File, maxLines: Int = 24): String {
+        if (!file.exists()) return ""
+        return try {
+            file.useLines { seq -> seq.take(maxLines).joinToString("\n") }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    /**
+     * Fallos recientes por canción (path → instante): abrir la pantalla de
+     * letras de una canción sin letra relanzaba la cascada entera (hasta
+     * ~10 peticiones) cada vez. Solo memoria; "Reintentar" lo ignora.
+     */
+    private val recentMisses = ConcurrentHashMap<String, Long>()
+
+    private suspend fun fetchAndSaveInternal(song: Song, force: Boolean, interactive: Boolean): Boolean = withSongLock(song) {
+        currentCoroutineContext().ensureActive()
+        val file = lrcFileFor(song)
+        var upgradingPlain = false
+        if (file.exists()) {
+            if (file.length() > 0) {
+                // Con `force`, una letra sin sincronizar se intenta mejorar.
+                if (!force) return@withSongLock true
+                val existing = runCatching { file.readText() }.getOrDefault("")
+                if (LrcLogic.hasTimestamps(existing)) return@withSongLock true
+                upgradingPlain = true
+            } else {
+                file.delete()
+            }
+        }
+        val now = System.currentTimeMillis()
+        if (!force) {
+            val missedAt = recentMisses[song.path]
+            if (missedAt != null && now - missedAt < MISS_TTL_MS) return@withSongLock false
+        }
+        // El timeout va FUERA de recoverOrNull a propósito:
+        // `TimeoutCancellationException` hereda de CancellationException, así
+        // que dentro recoverOrNull la relanzaría y abortaría la sincronización
+        // entera en vez de saltarse solo esta canción.
+        val content = try {
+            if (interactive) {
+                withTimeout(INTERACTIVE_TIMEOUT_MS) { interactiveFetcher.fetch(song) }
+            } else {
+                withTimeout(FETCH_TIMEOUT_MS) { fetcher.fetch(song) }
+            }
+        } catch (e: TimeoutCancellationException) {
+            lrcLog("timeout downloading lyrics for ${song.displayTitle}")
+            null
+        } catch (e: CancellationException) {
+            // Cancelación real del job (no el timeout): debe propagarse.
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        if (content.isNullOrBlank() || (upgradingPlain && !LrcLogic.hasTimestamps(content))) {
+            recentMisses[song.path] = now
+            return@withSongLock false
+        }
+        recentMisses.remove(song.path)
+        writeAtomic(file, content)
+    }
+
+    /**
+     * Descarga y guarda la letra si falta. [force] (acción "Reintentar")
+     * ignora los fallos recientes y, si ya hay una letra sin sincronizar,
+     * busca una versión sincronizada para sustituirla. [interactive] (la
+     * pantalla de letras esperando) consulta todas las fuentes en paralelo
+     * y apenas reintenta.
+     */
+    suspend fun fetchAndSave(song: Song, force: Boolean = false, interactive: Boolean = false): Boolean {
+        currentCoroutineContext().ensureActive()
+        return fetchAndSaveInternal(song, force, interactive)
     }
 
     /** Deletes zero-byte .lrc files (half-failed downloads); returns the count. */
@@ -648,15 +454,22 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
                 }
             }
             n
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             0
         }
     }
 
     /**
-     * Sequentially downloads missing .lrc files with a throttle. Aborts when
-     * cancelled, or early when the network is down in series (>=15 misses with
-     * no success). Returns the number of downloaded files.
+     * Descarga las .lrc faltantes con [SYNC_WORKERS] descargas en
+     * paralelo y UN ritmo global de un inicio cada
+     * [SYNC_THROTTLE_MS]: la misma cortesía con las APIs que la
+     * versión secuencial, pero sin pagar la latencia de red entre
+     * descargas (una red de 1 s pasaba de ~1.35 s a ~0.35 s por
+     * canción). Aborta al cancelarse, o temprano con la red caída
+     * (>= [SYNC_MISS_LIMIT] fallos seguidos sin éxito). Devuelve el
+     * número de ficheros descargados.
      */
     suspend fun syncMissing(
         songs: List<Song>,
@@ -667,27 +480,65 @@ class LyricsRepository(private val context: Context, private val prefs: LrcPrefs
         val total = songs.size
         // One directory listing for ALL presence checks.
         val lrcNames = cachedLrcNames()
-        var done = 0
-        var fetched = 0
-        var consecutiveMisses = 0
-        for (song in songs) {
-            if (shouldCancel?.invoke() == true) break
-            done++
-            onProgress?.invoke(done, total)
-            if (hasLrcIn(lrcNames, song)) continue
-            val ok = fetchAndSave(song)
-            if (ok) {
-                fetched++
-                consecutiveMisses = 0
-                registerLrcSaved(lrcNames, song)
-            } else {
-                consecutiveMisses++
-                if (consecutiveMisses >= 15 && fetched == 0) break
+        val doneCount = AtomicInteger(0)
+        val fetchedCount = AtomicInteger(0)
+        val missStreak = AtomicInteger(0)
+        val aborted = AtomicBoolean(false)
+        coroutineScope {
+            // Tickets de arranque: el ticker se bloquea en `send`
+            // si no hay descargas esperando, así que la cadencia
+            // real nunca supera la original aunque la red sea
+            // lenta (no se disparan ráfagas).
+            val throttle = Channel<Unit>(Channel.RENDEZVOUS)
+            val ticker = launch {
+                while (isActive) {
+                    delay(SYNC_THROTTLE_MS)
+                    try {
+                        throttle.send(Unit)
+                    } catch (_: ClosedSendChannelException) {
+                        break
+                    }
+                }
             }
-            delay(350) // throttle only after an attempted fetch
-            if (done % 10 == 0) delay(10) // yield periodically
+            val gate = Semaphore(SYNC_WORKERS)
+            val workers = songs.map { song ->
+                launch {
+                    gate.withPermit {
+                        currentCoroutineContext().ensureActive()
+                        if (aborted.get() || shouldCancel?.invoke() == true) return@withPermit
+                        doneCount.incrementAndGet()
+                        onProgress?.invoke(doneCount.get(), total)
+                        if (hasLrcIn(lrcNames, song)) return@withPermit
+                        if (aborted.get() || shouldCancel?.invoke() == true) return@withPermit
+                        // `receiveCatching`: el cierre del canal
+                        // (aborto por red caída) despierta a los
+                        // que aún esperan ticket sin lanzar.
+                        if (!throttle.receiveCatching().isSuccess) return@withPermit
+                        if (aborted.get() || shouldCancel?.invoke() == true) return@withPermit
+                        val ok = fetchAndSave(song)
+                        if (ok) {
+                            fetchedCount.incrementAndGet()
+                            missStreak.set(0)
+                            registerLrcSaved(lrcNames, song)
+                        } else if (
+                            missStreak.incrementAndGet() >= SYNC_MISS_LIMIT &&
+                            fetchedCount.get() == 0
+                        ) {
+                            aborted.set(true)
+                            // Cierra el canal: los que esperan
+                            // ticket salen ya, sin esperar los
+                            // 350 ms siguientes.
+                            throttle.close()
+                        }
+                    }
+                }
+            }
+            workers.forEach { it.join() }
+            ticker.cancel()
         }
-        runCatching { purgeEmptyLrc() }
-        return fetched
+        // No `runCatching`: se tragaría la cancelación del job y la
+        // sincronización seguiría tras un "cancelar".
+        purgeEmptyLrc()
+        return fetchedCount.get()
     }
 }

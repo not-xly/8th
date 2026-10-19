@@ -1,12 +1,9 @@
 package com.xly.u_8th.data
 
 import android.Manifest
-import android.content.ContentUris
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
-import android.net.Uri
 import androidx.core.net.toUri
 import android.os.Build
 import android.provider.DocumentsContract
@@ -15,7 +12,15 @@ import androidx.core.content.ContextCompat
 import com.xly.u_8th.domain.Song
 import com.xly.u_8th.domain.parseMetadata
 import com.xly.u_8th.util.audioExtensions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -47,9 +52,7 @@ data class SongMedia(
 data class LoadResult(val songs: List<Song>?, val folderScanned: Boolean)
 
 /**
- * Library loading: MediaStore/SAF listing and metadata parsing, ported from
- * library_service.dart plus the native channel that lived in the old
- * legacy MainActivity.
+ * Library loading: MediaStore/SAF listing and metadata parsing.
  *
  * [context]/[prefs] are nullable only so JVM unit tests can exercise the
  * pure conversion ([songsFromMedia]) without an Android Context; production
@@ -59,6 +62,37 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
 
     private val appContext: Context? = context?.applicationContext
     private val prefs: Prefs? = prefs
+    private val metadataPermits = Semaphore(4)
+    private val scanner by lazy { MediaScanner(appContext?.contentResolver) }
+
+    private inline fun <T> recover(block: () -> T, fallback: () -> T): T = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        fallback()
+    }
+
+    private suspend fun <T, R> mapMetadata(items: List<T>, read: suspend (T) -> R): List<R> =
+        withContext(Dispatchers.IO) {
+            val result = ArrayList<R>(items.size)
+            for (batch in items.chunked(4)) {
+                currentCoroutineContext().ensureActive()
+                result.addAll(coroutineScope {
+                    batch.map { item ->
+                        async {
+                            metadataPermits.withPermit {
+                                currentCoroutineContext().ensureActive()
+                                val value = read(item)
+                                currentCoroutineContext().ensureActive()
+                                value
+                            }
+                        }
+                    }.awaitAll()
+                })
+            }
+            result
+        }
 
     // ---- Permissions (no Activity here: the UI layer requests) ----
 
@@ -84,45 +118,54 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
      * symlink loop would hang the walk. Sorted alphabetically, alphabetical.
      */
     suspend fun scanDirectoryForAudio(dirPath: String): List<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            val dir = File(dirPath)
-            if (!dir.isDirectory) return@runCatching emptyList<String>()
-            dir.walkTopDown()
-                .onFail { _, _ -> }
-                .filter { it.isFile && it.extension.lowercase() in audioExtensions }
-                .map { it.path }
-                .toList()
-                .sorted()
-        }.getOrDefault(emptyList())
+        val pending = ArrayDeque<File>()
+        val visited = HashSet<String>()
+        val results = mutableListOf<String>()
+        pending.add(File(dirPath))
+        while (pending.isNotEmpty()) {
+            currentCoroutineContext().ensureActive()
+            val dir = pending.removeLast()
+            val canonical = recover({ dir.canonicalPath }, { null }) ?: continue
+            if (!visited.add(canonical)) continue
+            val children = recover({ dir.listFiles() }, { null }) ?: continue
+            for (file in children) {
+                currentCoroutineContext().ensureActive()
+                recover({
+                    if (file.isDirectory) pending.add(file)
+                    else if (file.isFile && file.extension.lowercase() in audioExtensions) results.add(file.path)
+                }, { Unit })
+            }
+        }
+        results.sorted()
     }
 
     // ---- Folder listing ----
 
     /**
-     * Port of controller.loadFromTreeUri without the interactive fallback:
+     * Loads a saved folder without interactive fallbacks:
      * MediaStore first for resolvable folder paths, SAF for content://
      * trees, null when nothing loads (the UI decides what comes next).
      */
     suspend fun loadFromTreeUri(treeUri: String): LoadResult = withContext(Dispatchers.IO) {
         val folderPath = resolveFolderPath(treeUri)
         if (folderPath != null) {
-            val fromStore = runCatching { listFromMediaStore(folderPath) }.getOrDefault(emptyList())
+            val fromStore = recover({ scanner.fromMediaStore(folderPath) }, { emptyList() })
             if (fromStore.isNotEmpty()) {
                 return@withContext LoadResult(songsFromMedia(fromStore), folderScanned = false)
             }
             // MediaStore empty (scoped storage): SAF only for content://
             // trees; for filesystem paths the direct scan is the fallback.
             if (treeUri.startsWith("content://")) {
-                val fromSaf = runCatching { listFromSAF(treeUri) }.getOrDefault(emptyList())
+                val fromSaf = recover({ scanner.fromSaf(treeUri) }, { emptyList() })
                 if (fromSaf.isNotEmpty()) {
-                    return@withContext LoadResult(songsFromMedia(fromSaf), folderScanned = false)
+                    return@withContext LoadResult(songsFromSaf(fromSaf), folderScanned = false)
                 }
             }
             LoadResult(null, folderScanned = isScannableDir(folderPath))
         } else {
-            val fromSaf = runCatching { listFromSAF(treeUri) }.getOrDefault(emptyList())
+            val fromSaf = recover({ scanner.fromSaf(treeUri) }, { emptyList() })
             if (fromSaf.isNotEmpty()) {
-                LoadResult(songsFromMedia(fromSaf), folderScanned = false)
+                LoadResult(songsFromSaf(fromSaf), folderScanned = false)
             } else {
                 LoadResult(null, folderScanned = false)
             }
@@ -136,8 +179,12 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
      * Maps a treeUri to a real folder path when possible: filesystem paths
      * and file:// URIs pass through; content:// trees only when they point
      * at primary storage ("primary:Music" -> /storage/emulated/0/Music).
+     *
+     * Public because the ViewModel needs the same mapping to decide whether
+     * a direct filesystem scan is a sensible fallback; it used to keep a
+     * duplicated copy that could drift.
      */
-    private fun resolveFolderPath(treeUri: String): String? = try {
+    fun resolveFolderPath(treeUri: String): String? = try {
         when {
             treeUri.startsWith("/") -> treeUri
             treeUri.startsWith("file://") -> treeUri.toUri().path
@@ -163,188 +210,10 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
         null
     }
 
-    private fun listFromMediaStore(folderPath: String): List<SongMedia> {
-        val resolver = appContext?.contentResolver ?: return emptyList()
-        val results = mutableListOf<SongMedia>()
-
-        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
-        } else {
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        }
-
-        // DATA is deprecated since Android 10 and often null on 11+ (scoped
-        // storage): RELATIVE_PATH is requested when available and filtering
-        // happens in code instead of "DATA LIKE path%" (which returned empty
-        // and fell back to the picker on every start).
-        val projection = mutableListOf(
-            MediaStore.Audio.Media._ID,
-            MediaStore.Audio.Media.TITLE,
-            MediaStore.Audio.Media.ARTIST,
-            MediaStore.Audio.Media.ALBUM,
-            MediaStore.Audio.Media.ALBUM_ID,
-            MediaStore.Audio.Media.TRACK,
-            MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.DATA,
-            MediaStore.Audio.Media.DISPLAY_NAME,
-        )
-        var relativeColName: String? = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            relativeColName = MediaStore.Audio.Media.RELATIVE_PATH
-            projection.add(relativeColName)
-        }
-
-        val normalizedPath = if (folderPath.endsWith("/")) folderPath else "$folderPath/"
-        // Expected relative prefix: "/storage/emulated/0/Music/Sub" -> "Music/Sub/"
-        val expectedRelative = normalizedPath
-            .removePrefix("/storage/emulated/0/")
-            .trim('/')
-            .let { if (it.isEmpty()) "" else "$it/" }
-        val sortOrder = "${MediaStore.Audio.Media.DISPLAY_NAME} ASC"
-        // IS_MUSIC=1: without it ringtones/recordings leak in.
-        val selection = "${MediaStore.Audio.Media.IS_MUSIC} = 1"
-        // Same anti-TransactionTooLarge cap as the SAF route.
-        val cap = 2000
-
-        resolver.query(collection, projection.toTypedArray(), selection, null, sortOrder)?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-            val titleCol = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
-            val artistCol = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
-            val albumCol = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM)
-            val albumIdCol = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID)
-            val trackCol = cursor.getColumnIndex(MediaStore.Audio.Media.TRACK)
-            val durationCol = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
-            val dataCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
-            val nameCol = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
-            val relCol = relativeColName?.let { cursor.getColumnIndex(it) } ?: -1
-
-            while (cursor.moveToNext() && results.size < cap) {
-                val id = cursor.getLong(idCol)
-                val data = if (dataCol >= 0) cursor.getString(dataCol) else null
-                val displayName = if (nameCol >= 0) cursor.getString(nameCol) else null
-                val relPath = if (relCol >= 0) cursor.getString(relCol) else null
-                val ext = (displayName ?: data ?: "").substringAfterLast('.', "").lowercase()
-                if (ext !in audioExtensions) continue
-
-                // OR, not exclusive: DATA can point at a different FUSE path
-                // (/sdcard vs /storage/emulated/0) while RELATIVE_PATH still
-                // matches — an AND here emptied whole folders.
-                val dataMatch = !data.isNullOrEmpty() &&
-                    (data.startsWith(normalizedPath) || data == folderPath)
-                val relMatch = !relPath.isNullOrEmpty() && expectedRelative.isNotEmpty() &&
-                    (relPath.startsWith(expectedRelative) || relPath.trim('/') == expectedRelative.trim('/'))
-                val inFolder = dataMatch || relMatch || expectedRelative.isEmpty()
-                if (!inFolder) continue
-
-                val albumId = if (albumIdCol >= 0 && !cursor.isNull(albumIdCol)) cursor.getLong(albumIdCol) else null
-
-                results.add(
-                    SongMedia(
-                        uri = ContentUris.withAppendedId(collection, id).toString(),
-                        name = displayName ?: "",
-                        title = if (titleCol >= 0) cursor.getString(titleCol) else null,
-                        artist = if (artistCol >= 0) cursor.getString(artistCol) else null,
-                        album = if (albumCol >= 0) cursor.getString(albumCol) else null,
-                        track = if (trackCol >= 0) cursor.getInt(trackCol) else 0,
-                        duration = if (durationCol >= 0) cursor.getLong(durationCol) else 0L,
-                        // Cover URI derivable from the row's own albumId —
-                        // cheaper than querying the Albums table per row.
-                        artUri = albumId?.let {
-                            ContentUris.withAppendedId(
-                                "content://media/external/audio/albumart".toUri(),
-                                it,
-                            ).toString()
-                        },
-                        path = data,
-                    )
-                )
-            }
-        }
-        return results
-    }
-
-    private fun listFromSAF(treeUri: String): List<SongMedia> {
-        val resolver = appContext?.contentResolver ?: return emptyList()
-        val uri = treeUri.toUri()
-        try {
-            // Persistable permission budget is limited: take it only once.
-            val alreadyPersisted = resolver.persistedUriPermissions.any {
-                it.uri == uri && it.isReadPermission
-            }
-            if (!alreadyPersisted) {
-                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-        } catch (_: Exception) {
-        }
-
-        val rootDocId = try {
-            DocumentsContract.getTreeDocumentId(uri)
-        } catch (_: Exception) {
-            null
-        } ?: return emptyList()
-
-        val result = mutableListOf<SongMedia>()
-        val cap = 2000
-        // BFS with ONE cursor per directory: DocumentFile.listFiles() queries
-        // the provider PER CHILD (N+1) and took seconds on big trees.
-        data class Dir(val id: String, val depth: Int)
-
-        val queue = ArrayDeque<Dir>()
-        queue.add(Dir(rootDocId, 0))
-
-        while (queue.isNotEmpty() && result.size < cap) {
-            val dir = queue.removeFirst()
-            if (dir.depth > 12) continue
-            val childrenUri = try {
-                DocumentsContract.buildChildDocumentsUriUsingTree(uri, dir.id)
-            } catch (_: Exception) {
-                continue
-            }
-            val subDirs = mutableListOf<String>()
-            try {
-                resolver.query(
-                    childrenUri,
-                    arrayOf(
-                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                        DocumentsContract.Document.COLUMN_MIME_TYPE,
-                    ),
-                    null, null, null,
-                )?.use { cursor ->
-                    val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                    val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                    val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                    while (cursor.moveToNext() && result.size < cap) {
-                        val docId = cursor.getString(idCol) ?: continue
-                        val name = cursor.getString(nameCol) ?: continue
-                        val mime = cursor.getString(mimeCol)
-                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            subDirs.add(docId)
-                        } else {
-                            val ext = name.substringAfterLast('.', "").lowercase()
-                            if (ext in audioExtensions) {
-                                result.add(
-                                    SongMedia(
-                                        uri = DocumentsContract.buildDocumentUriUsingTree(uri, docId).toString(),
-                                        name = name,
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                // Directory without permission: skip its children, keep scanning.
-            }
-            for (id in subDirs) queue.add(Dir(id, dir.depth + 1))
-        }
-        return result
-    }
-
     // ---- Conversions / metadata ----
 
     /**
-     * Port of fromRichList: native rows -> Songs. Drops rows without uri;
+     * Rows -> Songs. Drops rows without uri;
      * title falls back to the name minus extension; track "3/12" -> 3 and
      * 0/"" -> null; duration kept only when positive.
      */
@@ -377,21 +246,29 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
     }
 
     /**
-     * Port of the metadata parser: file paths are filtered by
+     * Metadata parsing: file paths are filtered by
      * extension and parsed off-thread; content:// URIs also get their tags
      * read here (the picker fallback saves URIs, not paths, so without this
      * those libraries would show no artist/album/duration). Missing or
      * unreadable entries keep the bare Song (no ghost entries).
      */
-    suspend fun parseMetadataForPaths(paths: List<String>): List<Song> = withContext(Dispatchers.IO) {
-        paths.mapNotNull { path ->
-            if (path.startsWith("content://")) {
-                readSongMetadataForUri(path) ?: Song(path = path, contentUri = path)
-            } else {
-                parseMetadata(listOf(path)) { readSongMetadata(it) }.firstOrNull()
-            }
+    suspend fun parseMetadataForPaths(paths: List<String>): List<Song> = mapMetadata(paths) { path ->
+        if (path.startsWith("content://")) {
+            readSongMetadataForUri(path) ?: Song(path = path, contentUri = path)
+        } else {
+            parseMetadata(listOf(path)) { readSongMetadata(it) }.firstOrNull()
         }
-    }
+    }.filterNotNull()
+
+    internal suspend fun songsFromSaf(rows: List<SongMedia>): List<Song> = mapMetadata(rows) { row ->
+        val fallback = songsFromMedia(listOf(row)).firstOrNull() ?: return@mapMetadata null
+        val metadata = readSongMetadataForUri(row.uri) ?: return@mapMetadata fallback
+        metadata.copy(
+            path = row.uri,
+            contentUri = row.uri,
+            title = metadata.title?.takeIf { it.isNotBlank() } ?: fallback.title,
+        )
+    }.filterNotNull()
 
     /**
      * Metadata for one content:// URI; null when unreadable. Open so
@@ -427,6 +304,8 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
                 } catch (_: Exception) {
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             return null
         }
@@ -462,6 +341,8 @@ open class LibraryRepository(context: Context?, prefs: Prefs?) {
                 } catch (_: Exception) {
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             return null
         }

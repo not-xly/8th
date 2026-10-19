@@ -11,5 +11,5 @@ enum class LoopMode(val wire: Int) {
     }
 }
 
-/** Main screen tabs. */
-enum class ViewTab { ALBUMS, QUEUE }
+/** Main screen tabs, in pager order. */
+enum class ViewTab { PLAYLISTS, ALBUMS, QUEUE }

@@ -1,6 +1,8 @@
 package com.xly.u_8th.data
 
 import android.content.Context
+import com.xly.u_8th.domain.Playlist
+import com.xly.u_8th.domain.PlaylistCodec
 import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -26,9 +28,11 @@ class Prefs(context: Context) {
 
     // ---- tree_uri ----
 
-    suspend fun getTreeUri(): String? = withContext(Dispatchers.IO) {
-        prefs.getString(KEY_TREE_URI, null)
-    }
+    // Lecturas sin `withContext(Dispatchers.IO)`: tras la primera
+    // carga SharedPreferences es una lectura sincronizada en memoria
+    // (sub-milisegundo). Esa primera carga la fuerza EighthApplication en
+    // IO al arrancar. Las escrituras y la migración siguen en IO.
+    fun getTreeUri(): String? = prefs.getString(KEY_TREE_URI, null)
 
     suspend fun setTreeUri(uri: String) = withContext(Dispatchers.IO) {
         prefs.edit { putString(KEY_TREE_URI, uri) }
@@ -40,20 +44,45 @@ class Prefs(context: Context) {
 
     // ---- file_paths / album_order (ordered lists) ----
 
-    suspend fun getFilePaths(): List<String>? = withContext(Dispatchers.IO) {
+    fun getFilePaths(): List<String>? =
         prefs.getString(KEY_FILE_PATHS, null)?.decodeListValue()
-    }
 
     suspend fun setFilePaths(paths: List<String>) = withContext(Dispatchers.IO) {
         prefs.edit { putString(KEY_FILE_PATHS, paths.encodeListValue()) }
     }
 
-    suspend fun getAlbumOrder(): List<String> = withContext(Dispatchers.IO) {
+    fun getAlbumOrder(): List<String> =
         prefs.getString(KEY_ALBUM_ORDER, null)?.decodeListValue() ?: emptyList()
+
+    suspend fun setLibrarySource(treeUri: String?, paths: List<String> = emptyList()) = withContext(Dispatchers.IO) {
+        prefs.edit {
+            if (treeUri == null) remove(KEY_TREE_URI) else putString(KEY_TREE_URI, treeUri)
+            putString(KEY_FILE_PATHS, paths.encodeListValue())
+        }
     }
 
     suspend fun saveAlbumOrder(order: List<String>) = withContext(Dispatchers.IO) {
         prefs.edit { putString(KEY_ALBUM_ORDER, order.encodeListValue()) }
+    }
+
+    // ---- grid_columns ----
+
+    /** Columnas fijas del grid de álbumes (5/6/7); null = "pantalla" (auto). */
+    fun getGridColumns(): Int? =
+        prefs.getString(KEY_GRID_COLUMNS, null)?.toIntOrNull()?.takeIf { it > 0 }
+
+    suspend fun setGridColumns(n: Int?) = withContext(Dispatchers.IO) {
+        prefs.edit {
+            if (n == null) remove(KEY_GRID_COLUMNS) else putString(KEY_GRID_COLUMNS, n.toString())
+        }
+    }
+
+    // ---- playlists ----
+
+    fun getPlaylists(): List<Playlist> = PlaylistCodec.decode(prefs.getString(KEY_PLAYLISTS, null))
+
+    suspend fun savePlaylists(playlists: List<Playlist>) = withContext(Dispatchers.IO) {
+        prefs.edit { putString(KEY_PLAYLISTS, PlaylistCodec.encode(playlists)) }
     }
 
     private fun List<String>.encodeListValue(): String = joinToString("\n")
@@ -64,7 +93,7 @@ class Prefs(context: Context) {
     // ---- One-time migration from legacy installs ----
 
     /**
-     * Imports tree_uri / file_paths / album_order from the legacy shared_preferences file written by
+     * Imports tree_uri / file_paths / album_order from the legacy Flutter
      * shared_preferences file, once. Keys already present in our prefs win
      * (never overwritten); any failure leaves the data keys untouched.
      */
@@ -119,6 +148,8 @@ class Prefs(context: Context) {
         private const val KEY_TREE_URI = "tree_uri"
         private const val KEY_FILE_PATHS = "file_paths"
         private const val KEY_ALBUM_ORDER = "album_order"
+        private const val KEY_GRID_COLUMNS = "grid_columns"
+        private const val KEY_PLAYLISTS = "playlists"
         private const val KEY_MIGRATED = "migrated_v1"
     }
 }
@@ -136,7 +167,6 @@ object LegacyPrefsCodecs {
     /** Base64 of "This is the prefix for a list." — the Dart list marker. */
     const val LIST_PREFIX = "VGhpcyBpcyB0aGUgcHJlZml4IGZvciBhIGxpc3Qu"
 
-    /** Decodes a legacy list value; null when [raw] is not a valid one. */
     /**
      * Base64 decoder seam. Production uses android.util.Base64 (available on
      * every supported API; java.util.Base64 needs API 26). JVM tests inject

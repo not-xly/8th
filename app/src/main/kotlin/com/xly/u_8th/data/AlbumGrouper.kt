@@ -13,8 +13,11 @@ object AlbumGrouper {
     fun resolveTrack(s: Song): Int {
         s.trackNumber?.let { return it }
         val t = s.title ?: s.displayTitle
-        val m = Regex("""^(\d+)""").find(t)
-        return m?.groupValues?.get(1)?.toIntOrNull() ?: 999
+        // Sin find(): anteponer el grupo evita copiar la cadena entera.
+        var end = 0
+        while (end < t.length && t[end].isDigit()) end++
+        if (end == 0) return 999
+        return t.substring(0, end).toIntOrNull() ?: 999
     }
 
     /**
@@ -65,26 +68,18 @@ object AlbumGrouper {
                 if (k.isNotEmpty()) principalDisplay.putIfAbsent(k, p!!)
             }
             val distinct = principals.filter { it.isNotEmpty() }.toSet()
-            if (distinct.size <= 1) {                emit(albumDisplay, tracks)
+            if (distinct.size <= 1) {
+                emit(albumDisplay, tracks)
                 continue
             }
-            // Is there a dominant primary (strict majority)? Then it is one
-            // album with collaborations, not two different albums.
-            val counts = HashMap<String, Int>()
-            for (p in principals) {
-                if (p.isEmpty()) continue
-                counts[p] = (counts[p] ?: 0) + 1
+            val folders = tracks.map { track ->
+                (track.filePath ?: track.path).takeUnless { it.startsWith("content://") }
+                    ?.substringBeforeLast('/', "")?.takeIf { it.isNotEmpty() }
             }
-            var dominant = ""
-            var dominantCount = 0
-            for ((k, v) in counts) {
-                if (v > dominantCount) {
-                    dominant = k
-                    dominantCount = v
-                }
-            }
-            val withPrincipal = counts.values.fold(0) { a, b -> a + b }
-            if (dominant.isNotEmpty() && dominantCount * 2 > withPrincipal) {
+            val numbers = tracks.mapNotNull { it.trackNumber }
+            val compilation = numbers.size == tracks.size && numbers.distinct().size == tracks.size &&
+                folders.size == tracks.size && folders.distinct().size == 1
+            if (compilation) {
                 emit(albumDisplay, tracks)
                 continue
             }
