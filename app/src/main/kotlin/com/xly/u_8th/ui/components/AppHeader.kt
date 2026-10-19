@@ -347,7 +347,7 @@ private fun OverflowMenuButton(
     var showColumnsDialog by remember { mutableStateOf(false) }
     Box {
         ToolbarButton(
-            index = 3,
+            index = 2,
             icon = Icons.Rounded.MoreHoriz,
             contentDescription = "Menú",
             active = open,

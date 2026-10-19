@@ -33,7 +33,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew :app:assembleRelease
-          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk 8th.apk
+          cp app/build/outputs/apk/release/app-release.apk 8th.apk
 
       - name: Publicar en GitHub Releases
         env:
