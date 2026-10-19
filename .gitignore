@@ -19,3 +19,6 @@ local.properties
 # Keystore material — never commit
 *.keystore
 *.jks
+
+# Flutter leftovers
+.dart_tool/
