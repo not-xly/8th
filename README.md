@@ -10,6 +10,14 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/not-xly/8th/releases/latest/download/8th.apk">
+    <img src="https://img.shields.io/badge/Descargar-APK-red?style=for-the-badge&logo=android&logoColor=white" alt="Descargar APK">
+  </a>
+</p>
+
+<p align="center"><sub>Al instalar, Android pedirá permiso para "instalar apps desconocidas" (desde el navegador o el gestor de archivos). Es normal: la APK va firmada por el autor y se distribuye fuera de Google Play.</sub></p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Android-API%2024%2B-green" alt="Android API 24+">
   <img src="https://img.shields.io/badge/Kotlin-100%25-7F52FF" alt="Kotlin">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT">
