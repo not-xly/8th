@@ -33,15 +33,18 @@ fun ArtistSheetForFullPlayer(
     // Reagrupar TODO el catálogo dentro de la composición bloqueaba el hilo
     // principal; con la revisión como clave no se queda obsoleto mientras
     // el panel siga abierto.
-    val albums by produceState(
-        initialValue = emptyList<Pair<String, List<Song>>>(),
+    // Álbumes y canciones fuera de ellos, del mismo agrupado.
+    val artistContent by produceState(
+        initialValue = emptyList<Pair<String, List<Song>>>() to emptyList<Song>(),
         key1 = artist,
         key2 = catalogRevision,
     ) {
         value = withContext(Dispatchers.Default) {
-            Artists.albumsOf(artist, AlbumGrouper.groupByAlbum(PlaybackCatalog.contents()))
+            val grouped = AlbumGrouper.groupByAlbum(PlaybackCatalog.contents())
+            Artists.albumsOf(artist, grouped) to Artists.looseSongsOf(artist, grouped)
         }
     }
+    val (albums, looseSongs) = artistContent
     val queue by PlayerBus.queue.collectAsStateWithLifecycle()
     val queueIndex by PlayerBus.queueIndex.collectAsStateWithLifecycle()
     var openAlbum by remember(artist) { mutableStateOf<Pair<String, List<Song>>?>(null) }
@@ -50,7 +53,14 @@ fun ArtistSheetForFullPlayer(
         ArtistAlbumsSheet(
             artist = remember(artist) { Artists.displayName(artist) },
             albums = albums,
+            looseSongs = looseSongs,
             onOpenAlbum = { albumName, albumSongs -> openAlbum = albumName to albumSongs },
+            onPlayArtist = { name, songs ->
+                connection.launch { playQueue(songs, initialIndex = 0, label = name) }
+            },
+            onPlayArtistShuffled = { name, songs ->
+                connection.launch { playQueue(songs, initialIndex = songs.indices.random(), label = "$name (Aleatorio)", shuffled = true) }
+            },
             onDismiss = onDismiss,
         )
     } else {

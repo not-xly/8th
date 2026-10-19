@@ -135,6 +135,23 @@ object Artists {
             .map { it.key to it.value }
     }
 
+    /**
+     * Canciones de [artist] (colaboraciones incluidas, misma regla que
+     * [albumsOf]) que no están en ninguno de sus álbumes; se comparan por
+     * `path`. Orden de [grouped].
+     */
+    fun looseSongsOf(artist: String, grouped: Map<String, List<Song>>): List<Song> {
+        val wanted = parseArtists(artist)
+        if (wanted.isEmpty()) return emptyList()
+        val inAlbums = HashSet<String>()
+        for ((_, songs) in albumsOf(artist, grouped)) for (s in songs) inAlbums.add(s.path)
+        val seen = HashSet<String>()
+        return grouped.values.asSequence()
+            .flatten()
+            .filter { it.path !in inAlbums && songHasAnyArtist(it, wanted) && seen.add(it.path) }
+            .toList()
+    }
+
     /** Nombre a mostrar: el primer artista de una cadena con colaboraciones. */
     fun displayName(artist: String): String = parseArtists(artist).firstOrNull() ?: artist.trim()
 }

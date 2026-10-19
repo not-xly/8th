@@ -21,12 +21,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xly.u_8th.domain.Song
+import com.xly.u_8th.ui.LibrarySearch
 import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
 import com.xly.u_8th.util.AppStrings
@@ -192,39 +193,68 @@ fun AlbumDetailsSheet(
     }
 }
 
-/** Sheet de álbumes de un artista. */
+/**
+ * Sheet de álbumes de un artista: nombre, recuento ("X álbumes + N
+ * canciones"), botón de reproducir y la lista de álbumes; al final, si las
+ * hay, una fila con las canciones fuera de esos álbumes.
+ */
 @Composable
 fun ArtistAlbumsSheet(
     artist: String,
     albums: List<Pair<String, List<Song>>>,
+    /** Canciones del artista que no están en [albums] (ver Artists.looseSongsOf). */
+    looseSongs: List<Song>,
     onOpenAlbum: (String, List<Song>) -> Unit,
+    /** Reproduce todas las canciones del artista: álbumes y sueltas. */
+    onPlayArtist: (String, List<Song>) -> Unit,
+    /** Igual que [onPlayArtist] pero en aleatorio. */
+    onPlayArtistShuffled: (String, List<Song>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    GlassBottomSheet(onDismiss = onDismiss, heightFraction = 0.6f) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TintedIconBadge(Icons.Rounded.Person, animatedAura())
+    val artistSongs = remember(albums, looseSongs) { albums.flatMap { it.second } + looseSongs }
+    GlassBottomSheet(onDismiss = onDismiss, heightFraction = 1f) {
+        Text(
+            artist,
+            fontSize = 26.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = (-0.5).sp,
+            color = EighthTheme.TextPrimary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        val summary = LibrarySearch.artistCountLabel(albums.size, looseSongs.size)
+        if (summary.isNotEmpty()) {
+            Text(summary, fontSize = 12.sp, color = EighthTheme.TextTertiary)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row {
+            PillButton(
+                label = "Reproducir",
+                onClick = {
+                    onDismiss()
+                    onPlayArtist(artist, artistSongs)
+                },
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.PlayArrow,
+                primary = true,
+                enabled = artistSongs.isNotEmpty(),
+            )
             Spacer(Modifier.width(10.dp))
-            Column {
-                Text(
-                    artist,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = (-0.3).sp,
-                    color = EighthTheme.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    "${albums.size} ${if (albums.size == 1) "álbum" else "álbumes"}",
-                    fontSize = 12.sp,
-                    color = EighthTheme.TextSecondary,
-                )
-            }
+            PillButton(
+                label = "Aleatorio",
+                onClick = {
+                    onDismiss()
+                    onPlayArtistShuffled(artist, artistSongs)
+                },
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.Shuffle,
+                enabled = artistSongs.isNotEmpty(),
+            )
         }
         Spacer(Modifier.height(12.dp))
         SheetDivider()
         Spacer(Modifier.height(12.dp))
-        if (albums.isEmpty()) {
+        if (albums.isEmpty() && looseSongs.isEmpty()) {
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 Text(
                     "Sin álbumes de este artista",
@@ -245,10 +275,25 @@ fun ArtistAlbumsSheet(
                         onClick = { onOpenAlbum(albumName, albumSongs) },
                     )
                 }
+                if (looseSongs.isNotEmpty()) {
+                    // Clave con prefijo: no choca con un álbum llamado igual.
+                    item(key = "loose:$LOOSE_SONGS_TITLE") {
+                        AlbumRow(
+                            albumName = LOOSE_SONGS_TITLE,
+                            albumSongs = looseSongs,
+                            onClick = { onOpenAlbum(LOOSE_SONGS_TITLE, looseSongs) },
+                        )
+                    }
+                }
             }
         }
     }
 }
+
+/** Título de la fila (y de la ficha) con las canciones fuera de álbumes. */
+private const val LOOSE_SONGS_TITLE = "Fuera de álbumes"
+
+private fun countLabel(n: Int, one: String, many: String): String = if (n == 1) "1 $one" else "$n $many"
 
 @Composable
 private fun AlbumRow(
@@ -273,14 +318,14 @@ private fun AlbumRow(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .size(46.dp)
-                        .clip(RoundedCornerShape(10.dp)),
+                        .clip(RoundedCornerShape(EighthTheme.RadiusS)),
                 )
             } else {
                 Box(
                     Modifier
                         .size(46.dp)
-                        .background(EighthTheme.GlassSurfaceLight.copy(alpha = 0.9f), RoundedCornerShape(10.dp))
-                        .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(10.dp)),
+                        .background(EighthTheme.GlassSurfaceLight.copy(alpha = 0.9f), RoundedCornerShape(EighthTheme.RadiusS))
+                        .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(EighthTheme.RadiusS)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Rounded.Album, null, tint = EighthTheme.TextSecondary, modifier = Modifier.size(20.dp))
@@ -299,7 +344,7 @@ private fun AlbumRow(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "${albumSongs.size} ${if (albumSongs.size == 1) "canción" else "canciones"}",
+                    countLabel(albumSongs.size, "canción", "canciones"),
                     color = EighthTheme.TextSecondary,
                     fontSize = 12.sp,
                 )
