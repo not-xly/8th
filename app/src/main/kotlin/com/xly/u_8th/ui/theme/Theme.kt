@@ -5,11 +5,16 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.xly.u_8th.util.fnv1aBytesSampled
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,9 +23,7 @@ import androidx.palette.graphics.Palette
 import kotlinx.coroutines.delay
 
 /**
- * "Liquid glass" dark theme tokens, ported from the previous app's
- * AppTheme. Blur is limited to fixed chrome in the original; here chrome
- * uses the same translucent fills without true backdrop blur (the
+ * "Liquid glass" dark theme tokens. Chrome uses translucent fills without true backdrop blur (the
  * background is a near-solid dark gradient, so the visual result matches).
  */
 object EighthTheme {
@@ -40,6 +43,7 @@ object EighthTheme {
     val TextTertiary = Color(0xFF636366) // iOS tertiary
 
     val SelectedCard = Color(0xFF2A1D1E)
+    val Danger = Color(0xFFFF6B6B)
 
     val RadiusXL = 26.dp
     val RadiusL = 18.dp
@@ -62,6 +66,46 @@ object EighthTheme {
             hsv,
         )
         hsv[1] = (hsv[1] * (1 - amount)).coerceIn(0f, 1f)
+        return Color(android.graphics.Color.HSVToColor(hsv))
+    }
+
+    // --- Un único "cristal" para toda la app -------------------------------
+    // Relleno en degradado vertical (brillo arriba) y filo fino que se
+    // desvanece hacia abajo. Lo usan botones, cápsulas, pastillas y menús.
+    val GlassFillTop = Color.White.copy(alpha = 0.12f)
+    val GlassFillBottom = Color.White.copy(alpha = 0.05f)
+    val GlassStrokeTop = Color.White.copy(alpha = 0.20f)
+    val GlassStrokeBottom = Color.White.copy(alpha = 0.05f)
+    val GlassPressed = Color.White.copy(alpha = 0.14f)
+    val GlassStrokeWidth = 0.8.dp
+
+    /** Fondo opaco de menús, diálogos y hojas. */
+    val PopupSurface = Color(0xFF202023)
+
+    // Tamaños de botón de icono: compacto (filas, letras), estándar
+    // (cabeceras de hojas, cápsula) y grande (reproductor).
+    val IconButtonS = 34.dp
+    val IconButtonM = 40.dp
+    val IconButtonL = 44.dp
+
+    /**
+     * Acento legible sobre fondo oscuro. El aura sale de la portada y a
+     * veces es gris o muy oscura: entonces se mezcla con el rojo de la marca
+     * y se le sube el brillo, para que "activo" siempre se distinga.
+     */
+    fun accent(aura: Color): Color {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(
+            android.graphics.Color.rgb((aura.red * 255).toInt(), (aura.green * 255).toInt(), (aura.blue * 255).toInt()),
+            hsv,
+        )
+        val base = if (hsv[1] < 0.28f) lerpColor(aura, PrimarySoft, 0.7f) else aura
+        android.graphics.Color.colorToHSV(
+            android.graphics.Color.rgb((base.red * 255).toInt(), (base.green * 255).toInt(), (base.blue * 255).toInt()),
+            hsv,
+        )
+        hsv[1] = hsv[1].coerceIn(0.35f, 0.75f)
+        hsv[2] = hsv[2].coerceAtLeast(0.85f)
         return Color(android.graphics.Color.HSVToColor(hsv))
     }
 
@@ -99,21 +143,47 @@ object AuraPalette {
         while (cache.size > 60) cache.remove(cache.keys.first())
     }
 
+    /**
+     * `lastHash`/`hasLast` se leen y escriben desde varias coroutines
+     * independientes (`MainViewModel` las lanza al cambiar de canción y al
+     * llegar portada), así que el trío mutable va bajo el mismo lock: sin
+     * él dos decodes concurrentes podían publicar ambos y dejar el estado
+     * "sin hash" con un hash no nulo (aura bloqueada en el fallback).
+     */
+    private val stateLock = Any()
+
+    /** Reclamo atómico: devuelve false si este hash ya se está procesando. */
+    private fun claim(hash: Long): Boolean = synchronized(stateLock) {
+        if (hasLast && hash == lastHash) {
+            false
+        } else {
+            hasLast = true
+            lastHash = hash
+            true
+        }
+    }
+
+    private fun isCurrent(hash: Long): Boolean = synchronized(stateLock) {
+        hasLast && hash == lastHash
+    }
+
+    private fun forget() = synchronized(stateLock) {
+        hasLast = false
+        lastHash = 0L
+    }
+
     private var lastHash = 0L
     private var hasLast = false
 
     /** Called when the current song's art becomes available or changes. */
     suspend fun updateForArt(art: ByteArray?) {
         if (art == null || art.isEmpty()) {
-            hasLast = false
-            lastHash = 0
+            forget()
             setAuraTarget(Color(FALLBACK))
             return
         }
         val hash = fnv1aBytesSampled(art)
-        if (hasLast && hash == lastHash) return
-        hasLast = true
-        lastHash = hash
+        if (!claim(hash)) return
         cacheGet(hash)?.let {
             setAuraTarget(it)
             return
@@ -122,9 +192,20 @@ object AuraPalette {
             // Small delay so the navigation transition does not compete
             // with the decode, then a tiny palette for speed.
             delay(80)
-            if (!hasLast || hash != lastHash) return
+            if (!isCurrent(hash)) return
             val color = withContext(Dispatchers.Default) {
-                val opts = BitmapFactory.Options().apply { inSampleSize = computeSample(art) }
+                // Muestreo calculado desde las dimensiones reales: un
+                // inSampleSize fijo de 8 descartaba hasta 64x de los píxeles
+                // incluso para una miniatura de 40 dp.
+                val opts = BitmapFactory.Options().apply { inSampleSize = 1 }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(art, 0, art.size, bounds)
+                var sample = 1
+                val maxSide = maxOf(bounds.outWidth, bounds.outHeight)
+                // El palette solo necesita ~128px: por encima de eso el
+                // coste de decodificar crece sin mejorar el color.
+                while (maxSide / sample > AURA_TARGET_PX * 2) sample *= 2
+                opts.inSampleSize = sample
                 val bmp = BitmapFactory.decodeByteArray(art, 0, art.size, opts) ?: return@withContext null
                 val palette = Palette.from(bmp).maximumColorCount(8).clearFilters().generate()
                 bmp.recycle()
@@ -133,7 +214,11 @@ object AuraPalette {
             } ?: return setAuraTarget(Color(FALLBACK))
             val c = Color(color).copy(alpha = 1f)
             cachePut(hash, c)
-            if (hasLast && hash == lastHash) setAuraTarget(c)
+            if (isCurrent(hash)) setAuraTarget(c)
+        } catch (e: CancellationException) {
+            // CancellationException es un IllegalStateException: sin esto el
+            // "cancelar" se convertía en un aura de fallback publicada.
+            throw e
         } catch (_: Exception) {
             setAuraTarget(Color(FALLBACK))
         }
@@ -148,28 +233,29 @@ object AuraPalette {
         return android.graphics.Color.HSVToColor(hsv)
     }
 
-    private fun computeSample(art: ByteArray): Int = 8
+    /** Lado máximo en píxeles que necesita el extractor de paleta. */
+    private const val AURA_TARGET_PX = 128
 
-    /** Animated target so color changes glide (~440ms) like the original. */
-    /** The UI animates toward this value; here we just publish the target. */
+    /** Animated target so color changes glide (~440ms) like the original;
+     *  the UI animates toward it, here we only publish the target. */
     private fun setAuraTarget(target: Color) {
         _aura.value = target
-    }
-
-    fun reset() {
-        hasLast = false
-        lastHash = 0
-        _aura.value = Color(FALLBACK)
     }
 }
 
 /** Compose helper: collect the aura flow as an animated color. */
 @Composable
-fun animatedAura(): Color {
-    val aura by AuraPalette.aura.collectAsState()
-    return animateColorAsState(
+fun animatedAura(): Color = LocalAnimatedAura.current.value
+
+private val LocalAnimatedAura = compositionLocalOf<State<Color>> { mutableStateOf(EighthTheme.Primary) }
+
+@Composable
+fun AuraProvider(content: @Composable () -> Unit) {
+    val aura by AuraPalette.aura.collectAsStateWithLifecycle()
+    val animated = animateColorAsState(
         targetValue = aura,
         animationSpec = tween(durationMillis = 440, easing = EighthTheme.EasingStandard),
         label = "aura",
-    ).value
+    )
+    CompositionLocalProvider(LocalAnimatedAura provides animated, content = content)
 }

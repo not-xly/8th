@@ -1,14 +1,9 @@
 package com.xly.u_8th.ui.components
 
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -25,35 +20,34 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DragHandle
-import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.xly.u_8th.domain.Song
 import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
-import com.xly.u_8th.util.fmtMs
 
 /**
- * Cola de reproducción (port of widgets/queue_view.dart): cabecera con
+ * Cola de reproducción: cabecera con
  * shuffle, filas reordenables por tirador y eliminación.
  */
 @Composable
@@ -67,15 +61,24 @@ fun QueueTab(
     onRemove: (Int) -> Unit,
     onTapRow: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    /** Espacio reservado bajo la última fila (p. ej. el mini player flotante). */
+    bottomContentPadding: Dp = 8.dp,
 ) {
     val aura = animatedAura()
     if (queue.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                "Cola vacía",
-                color = EighthTheme.TextSecondary,
-                fontSize = 15.sp,
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.QueueMusic,
+                    null,
+                    tint = EighthTheme.TextTertiary,
+                    modifier = Modifier.size(44.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("Cola vacía", color = EighthTheme.TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text("Abre un álbum y pulsa Reproducir", color = EighthTheme.TextSecondary, fontSize = 13.sp)
+            }
         }
         return
     }
@@ -84,8 +87,7 @@ fun QueueTab(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .background(EighthTheme.GlassSurface.copy(alpha = 0.56f), RoundedCornerShape(12.dp))
-                    .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(12.dp))
+                    .glassCard(shape = RoundedCornerShape(EighthTheme.RadiusM))
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -104,7 +106,6 @@ fun QueueTab(
                     icon = Icons.Rounded.Shuffle,
                     contentDescription = if (isShuffled) "Restaurar orden original" else "Aleatorizar cola",
                     active = isShuffled,
-                    activeTint = aura,
                     onClick = onToggleShuffle,
                 )
             }
@@ -115,6 +116,7 @@ fun QueueTab(
             onReorder = onReorder,
             onRemove = onRemove,
             onTapRow = onTapRow,
+            bottomContentPadding = bottomContentPadding,
             modifier = Modifier
                 .fillMaxSize()
                 .weight(1f),
@@ -129,41 +131,82 @@ private fun QueueList(
     onReorder: (Int, Int) -> Unit,
     onRemove: (Int) -> Unit,
     onTapRow: (Int) -> Unit,
+    bottomContentPadding: Dp,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    // Orden local: durante el arrastre solo se mueve esta lista y al soltar
+    // se manda UN movimiento. Antes cada paso era un IPC y la fila cambiaba
+    // de índice bajo el dedo, con lo que el gesto se cortaba.
+    var localList by remember { mutableStateOf(queue) }
+    var dragFrom by remember { mutableStateOf<Int?>(null) }
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
-    // Movimiento enviado al servicio aún no reflejado en PlayerBus.queue.
-    var pendingComp by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    val appliedComp = remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    // Al llegar la cola reordenada del servicio, compensa la traslación en
-    // la misma frame para que la fila siga bajo el dedo (latencia IPC).
-    val pending = pendingComp
-    // Deliberate one-frame read while dragging only: keeps the dragged row
-    // under the finger when the reordered queue arrives from the service.
-    if (pending != null && pending != appliedComp.value && draggingIndex != null) {
-        // noinspection FrequentlyChangingValue
+
+    LaunchedEffect(queue) {
+        if (draggingIndex == null) localList = queue
+    }
+
+    fun dragStep(dy: Float) {
+        val from = draggingIndex ?: return
+        dragOffsetY += dy
         val info = listState.layoutInfo
-        val step = info.visibleItemsInfo.firstOrNull()?.let { it.size + info.mainAxisItemSpacing } ?: 0
-        if (step > 0) {
-            dragOffsetY += (pending.first - pending.second) * step
-            draggingIndex = pending.second
-            appliedComp.value = pending
+        val dragged = info.visibleItemsInfo.firstOrNull { it.index == from } ?: return
+        val center = dragged.offset + dragOffsetY + dragged.size / 2f
+        val target = info.visibleItemsInfo
+            .firstOrNull { center >= it.offset && center < it.offset + it.size }
+            ?.index
+        if (target == null || target == from) return
+        val reordered = localList.toMutableList()
+        reordered.add(target, reordered.removeAt(from))
+        localList = reordered
+        dragOffsetY -= (target - from) * dragged.size
+        draggingIndex = target
+    }
+
+    fun endDrag() {
+        val from = dragFrom
+        val to = draggingIndex
+        dragFrom = null
+        draggingIndex = null
+        dragOffsetY = 0f
+        if (from != null && to != null && from != to) {
+            // RAW drop index (insertion point pre-removal): QueueManager hace el ajuste -1.
+            onReorder(from, if (to > from) to + 1 else to)
+        } else if (localList != queue) {
+            localList = queue
         }
     }
 
+    // `Song.queueEntryKey` recorre 0 until index para contar repeticiones:
+    // invocarlo desde `key =` costs O(n²) en cada pasada de layout. Aquí se
+    // precalcula una vez por identidad de cola.
+    // Lista y claves fijadas en esta composición: el contenido del LazyColumn
+    // se re-evalúa fuera de ella y, leyendo `localList` directamente, podía
+    // ver la cola nueva (aleatorio total) con las claves de la vieja y salir
+    // del índice.
+    val rows = localList
+    val entryKeys = remember(rows) { Song.queueEntryKeys(rows) }
+    // "Sonando" por identidad de entrada: la lista local puede ir por
+    // delante del índice del servicio.
+    val playingKey = remember(queue, queueIndex) { Song.queueEntryKeys(queue).getOrNull(queueIndex) }
+
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = 4.dp,
+            bottom = 4.dp + bottomContentPadding,
+        ),
         modifier = modifier,
     ) {
         items(
-            count = queue.size,
-            key = { Song.queueEntryKey(queue, it) },
+            count = rows.size,
+            key = { entryKeys[it] },
         ) { index ->
-            val song = queue[index]
-            val isPlaying = index == queueIndex
+            val song = rows[index]
+            val isPlaying = entryKeys[index] == playingKey
             val isDragging = draggingIndex == index
             Box(
                 Modifier
@@ -185,33 +228,13 @@ private fun QueueList(
                     isPlaying = isPlaying,
                     onTap = { onTapRow(index) },
                     onRemove = { onRemove(index) },
-                    onDragStart = { draggingIndex = index; dragOffsetY = 0f },
-                    onDrag = { amount ->
-                        if (draggingIndex != index) return@QueueRow
-                        dragOffsetY += amount.y
-                        val info = listState.layoutInfo
-                        val dragged = info.visibleItemsInfo.firstOrNull { it.index == index }
-                            ?: return@QueueRow
-                        val center = dragged.offset + dragOffsetY + dragged.size / 2f
-                        val target = info.visibleItemsInfo.firstOrNull { item ->
-                            center >= item.offset && center <= item.offset + item.size
-                        } ?: return@QueueRow
-                        if (target.index == index) return@QueueRow
-                        // RAW drop index (insertion point
-                        // pre-removal): QueueManager hace el ajuste -1.
-                        val newIndex = if (target.index > index) target.index + 1 else target.index
-                        val finalPos = target.index
-                        onReorder(index, newIndex)
-                        pendingComp = index to finalPos
+                    onDragStart = {
+                        dragFrom = index
+                        draggingIndex = index
+                        dragOffsetY = 0f
                     },
-                    onDragEnd = {
-                        if (draggingIndex == index) {
-                            draggingIndex = null
-                            dragOffsetY = 0f
-                            pendingComp = null
-                            appliedComp.value = null
-                        }
-                    },
+                    onDrag = { amount -> dragStep(amount.y) },
+                    onDragEnd = { endDrag() },
                 )
             }
         }
@@ -230,64 +253,21 @@ private fun QueueRow(
     onDragEnd: () -> Unit,
 ) {
     val aura = animatedAura()
-    val auraSoft = EighthTheme.desaturated(aura)
-    val fill by animateColorAsState(
-        targetValue = if (isPlaying) lerp(EighthTheme.SelectedCard, aura, 0.18f).copy(alpha = 0.92f)
-        else EighthTheme.GlassSurface.copy(alpha = 0.62f),
-        animationSpec = tween(420, easing = EighthTheme.EasingStandard),
-        label = "queueFill",
-    )
+    val accent = EighthTheme.accent(aura)
+    // La fila conserva su composición al cambiar de índice (clave estable):
+    // el detector no se reinicia y lee siempre los callbacks actuales.
+    val dragStart by rememberUpdatedState(onDragStart)
+    val drag by rememberUpdatedState(onDrag)
+    val dragEnd by rememberUpdatedState(onDragEnd)
     Row(
         Modifier
             .fillMaxWidth()
-            .background(fill, RoundedCornerShape(EighthTheme.RadiusM))
-            .then(
-                if (isPlaying) {
-                    Modifier.border(
-                        BorderStroke(1.dp, aura.copy(alpha = 0.88f)),
-                        RoundedCornerShape(EighthTheme.RadiusM),
-                    )
-                } else {
-                    Modifier.border(
-                        BorderStroke(0.7.dp, EighthTheme.GlassBorder),
-                        RoundedCornerShape(EighthTheme.RadiusM),
-                    )
-                }
-            )
-            .clickable(
-                interactionSource = remember(index) { MutableInteractionSource() },
-                indication = null,
-                onClick = onTap,
-            )
-            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            .glassCard(active = isPlaying, accent = accent)
+            .pressClickable(pressedScale = 0.98f, onClick = onTap)
+            .padding(start = 8.dp, end = 12.dp, top = 7.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (isPlaying) {
-            Box(
-                Modifier
-                    .padding(0.dp)
-                    .background(aura.copy(alpha = 0.14f), RoundedCornerShape(9.dp))
-                    .border(BorderStroke(0.7.dp, aura.copy(alpha = 0.22f)), RoundedCornerShape(9.dp))
-                    .padding(7.dp),
-            ) {
-                Icon(Icons.Rounded.Equalizer, null, tint = auraSoft, modifier = Modifier.size(16.dp))
-            }
-        } else {
-            Box(
-                Modifier
-                    .size(30.dp)
-                    .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(9.dp))
-                    .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(9.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "${index + 1}",
-                    color = EighthTheme.TextSecondary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                )
-            }
-        }
+        SongArtThumb(song, isCurrent = isPlaying)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -295,7 +275,7 @@ private fun QueueRow(
                 fontSize = 14.sp,
                 fontWeight = if (isPlaying) FontWeight.SemiBold else FontWeight.Medium,
                 letterSpacing = (-0.2).sp,
-                color = if (isPlaying) auraSoft else EighthTheme.TextPrimary,
+                color = if (isPlaying) accent else EighthTheme.TextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -313,35 +293,29 @@ private fun QueueRow(
             Modifier
                 .size(36.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color.White.copy(alpha = 0.06f))
-                .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(10.dp))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onRemove,
-                ),
+                .pressClickable(pressedScale = 0.8f, onClick = onRemove),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Rounded.Close, "Quitar", tint = EighthTheme.TextSecondary, modifier = Modifier.size(18.dp))
+            Icon(Icons.Rounded.Close, "Quitar", tint = EighthTheme.TextTertiary, modifier = Modifier.size(18.dp))
         }
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(2.dp))
         Box(
             Modifier
-                .size(width = 28.dp, height = 36.dp)
+                .size(36.dp)
                 .pointerInput(Unit) {
                     detectDragGestures(
-                        onDragStart = { onDragStart() },
+                        onDragStart = { dragStart() },
                         onDrag = { change, amount ->
                             change.consume()
-                            onDrag(amount)
+                            drag(amount)
                         },
-                        onDragEnd = { onDragEnd() },
-                        onDragCancel = { onDragEnd() },
+                        onDragEnd = { dragEnd() },
+                        onDragCancel = { dragEnd() },
                     )
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Rounded.DragHandle, "Mover", tint = EighthTheme.TextTertiary, modifier = Modifier.size(16.dp))
+            Icon(Icons.Rounded.DragHandle, "Mover", tint = EighthTheme.TextSecondary, modifier = Modifier.size(20.dp))
         }
     }
 }

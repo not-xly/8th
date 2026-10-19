@@ -1,31 +1,34 @@
 package com.xly.u_8th.ui.components
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import kotlin.math.roundToInt
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.lerp
+import kotlin.math.abs
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,68 +38,60 @@ import com.xly.u_8th.domain.ViewTab
 import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
 
-/** Pills Álbumes/Cola (port of widgets/tab_selector.dart). */
+/**
+ * Control segmentado Listas/Álbumes/Cola. El indicador sigue al pager en
+ * vivo ([pagerPosition] = página + fracción), así acompaña al dedo al
+ * deslizar en vez de esperar a que la página se asiente.
+ */
 @Composable
 fun TabSelector(
-    currentTab: ViewTab,
-    albumCount: Int,
-    queueLength: Int,
+    pagerPosition: () -> Float,
     onTabSelected: (ViewTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val aura = animatedAura()
-    Row(
+    BoxWithConstraints(
         modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 10.dp)
-            .background(EighthTheme.GlassSurface.copy(alpha = 0.52f), RoundedCornerShape(EighthTheme.RadiusM))
-            .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(EighthTheme.RadiusM))
-            .padding(4.dp),
+            .glass()
+            .padding(3.dp),
     ) {
-        TabPill(ViewTab.ALBUMS, "Álbumes ($albumCount)", currentTab == ViewTab.ALBUMS, aura, Modifier.weight(1f)) { onTabSelected(ViewTab.ALBUMS) }
-        TabPill(ViewTab.QUEUE, "Cola ($queueLength)", currentTab == ViewTab.QUEUE, aura, Modifier.weight(1f)) { onTabSelected(ViewTab.QUEUE) }
+        val slot = maxWidth / ViewTab.entries.size
+        Box(
+            Modifier
+                .matchParentSize()
+                .padding(end = maxWidth - slot)
+                .offset { IntOffset((slot.toPx() * pagerPosition()).roundToInt(), 0) }
+                .glass(accent = EighthTheme.accent(aura)),
+        )
+        Row(Modifier.fillMaxWidth()) {
+            for (tab in ViewTab.entries) {
+                TabPill(tab, pagerPosition, Modifier.weight(1f)) { onTabSelected(tab) }
+            }
+        }
     }
 }
 
 @Composable
 private fun TabPill(
     tab: ViewTab,
-    label: String,
-    active: Boolean,
-    aura: Color,
+    pagerPosition: () -> Float,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    // Colores siempre animando (nunca transparente<->color): el brillo
-    // interpola en vez de saltar al cambiar de tab.
-    val fill by animateColorAsState(
-        targetValue = if (active) aura.copy(alpha = 0.94f) else Color.Transparent,
-        animationSpec = tween(240),
-        label = "tabFill",
-    )
-    val border by animateColorAsState(
-        targetValue = if (active) aura.copy(alpha = 0.9f) else Color.Transparent,
-        animationSpec = tween(240),
-        label = "tabBorder",
-    )
-    val shadow by animateColorAsState(
-        targetValue = if (active) aura.copy(alpha = 0.22f) else Color.Transparent,
-        animationSpec = tween(240),
-        label = "tabShadow",
-    )
-    val fg by animateColorAsState(
-        targetValue = if (active) Color.White else EighthTheme.TextSecondary,
-        animationSpec = tween(240),
-        label = "tabFg",
-    )
+    // 1 cuando el indicador está encima, 0 a una pestaña de distancia.
+    val amount by remember(tab) {
+        derivedStateOf { (1f - abs(pagerPosition() - tab.ordinal)).coerceIn(0f, 1f) }
+    }
+    val fg = lerp(EighthTheme.TextSecondary, Color.White, amount)
     Box(
         modifier
-            .shadow(10.dp, RoundedCornerShape(EighthTheme.RadiusS), spotColor = shadow, ambientColor = Color.Transparent)
-            .background(fill, RoundedCornerShape(EighthTheme.RadiusS))
-            .border(BorderStroke(0.8.dp, border), RoundedCornerShape(EighthTheme.RadiusS))
-            .clickable(
+            .selectable(
+                selected = amount > 0.5f,
                 interactionSource = remember(tab) { MutableInteractionSource() },
                 indication = null,
+                role = Role.Tab,
                 onClick = onClick,
             )
             .padding(vertical = 10.dp),
@@ -107,17 +102,25 @@ private fun TabPill(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                if (tab == ViewTab.ALBUMS) Icons.Rounded.Album else Icons.AutoMirrored.Rounded.QueueMusic,
+                when (tab) {
+                    ViewTab.PLAYLISTS -> Icons.AutoMirrored.Rounded.PlaylistPlay
+                    ViewTab.ALBUMS -> Icons.Rounded.Album
+                    ViewTab.QUEUE -> Icons.AutoMirrored.Rounded.QueueMusic
+                },
                 null,
                 tint = fg,
                 modifier = Modifier.size(16.dp),
             )
-            Box(Modifier.size(width = 7.dp, height = 0.dp))
+            Spacer(Modifier.width(6.dp))
             Text(
-                label,
-                fontSize = 13.sp,
-                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                letterSpacing = 0.2.sp,
+                when (tab) {
+                    ViewTab.PLAYLISTS -> "Listas"
+                    ViewTab.ALBUMS -> "Álbumes"
+                    ViewTab.QUEUE -> "Cola"
+                },
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.sp,
                 color = fg,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

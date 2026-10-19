@@ -1,6 +1,26 @@
 package com.xly.u_8th.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,7 +30,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreHoriz
@@ -25,8 +45,6 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,10 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -54,8 +69,7 @@ import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
 
 /**
- * Top app bar: logo + title + action buttons + overflow menu (port of
- * widgets/app_header.dart).
+ * Top app bar: logo + title + action buttons + overflow menu.
  */
 @Composable
 fun AppHeader(
@@ -67,23 +81,23 @@ fun AppHeader(
     isSyncing: Boolean,
     syncDone: Int,
     syncTotal: Int,
-    onSearchToggle: (() -> Unit)?,
-    onShuffle: (() -> Unit)?,
+    onSearchToggle: () -> Unit,
+    onShuffle: () -> Unit,
     onPlaySelected: () -> Unit,
     onPickFolder: () -> Unit,
     onShowInfo: () -> Unit,
     onToggleReorder: () -> Unit,
     onSyncLyrics: () -> Unit,
+    gridColumns: Int?,
+    onSetGridColumns: (Int?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val aura = animatedAura()
+    // Transparente: el fondo ambiental (carátula + aura) se ve detrás.
     Box(
         modifier
             .fillMaxWidth()
-            .background(EighthTheme.GlassSurface.copy(alpha = 0.42f))
-            // Hairline solo abajo (BorderStroke dibujaría los 4 lados).
-            .drawBottomHairline()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(start = 18.dp, end = 16.dp, top = 14.dp, bottom = 6.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Logo: disco blanco sobre contenedor con el color dinámico.
@@ -114,52 +128,204 @@ fun AppHeader(
             Spacer(Modifier.width(12.dp))
             Text(
                 "8th",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (-0.5).sp,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.8).sp,
                 color = EighthTheme.TextPrimary,
             )
             Spacer(Modifier.weight(1f))
             if (selectedAlbumCount > 0) {
-                GlassIconButton(
-                    icon = Icons.Rounded.Shuffle,
-                    contentDescription = "Aleatorio de $selectedAlbumCount álbumes",
-                    active = true,
-                    activeTint = aura,
-                    onClick = onPlaySelected,
-                )
-                Spacer(Modifier.width(10.dp))
+                // Acción contextual destacada, fuera de la cápsula.
+                Box(
+                    Modifier
+                        .size(HeaderButtonSize)
+                        .shadow(14.dp, CircleShape, spotColor = aura.copy(alpha = 0.45f), ambientColor = Color.Transparent)
+                        .clip(CircleShape)
+                        .background(Brush.verticalGradient(listOf(aura, aura.copy(alpha = 0.78f))))
+                        .border(BorderStroke(0.8.dp, Color.White.copy(alpha = 0.22f)), CircleShape)
+                        .pressClickable(pressedScale = 0.88f, onClick = onPlaySelected),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.Shuffle,
+                        contentDescription = "Aleatorio de $selectedAlbumCount álbumes",
+                        tint = Color.White,
+                        modifier = Modifier.size(HeaderIconSize),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
             }
-            GlassIconButton(
-                icon = Icons.Rounded.Search,
-                contentDescription = "Buscar",
-                active = isSearching,
-                enabled = hasSongs,
-                onClick = { onSearchToggle?.invoke() },
-            )
-            Spacer(Modifier.width(10.dp))
-            GlassIconButton(
-                icon = Icons.Rounded.Shuffle,
-                contentDescription = "Aleatorio Todo",
-                enabled = hasSongs,
-                onClick = { onShuffle?.invoke() },
-            )
-            Spacer(Modifier.width(10.dp))
-            OverflowMenuButton(
-                hasSongs = hasSongs,
-                currentTab = currentTab,
-                isReorderingAlbums = isReorderingAlbums,
-                isSyncing = isSyncing,
-                syncDone = syncDone,
-                syncTotal = syncTotal,
-                onPickFolder = onPickFolder,
-                onShowInfo = onShowInfo,
-                onToggleReorder = onToggleReorder,
-                onSyncLyrics = onSyncLyrics,
-            )
+            HeaderToolbar {
+                ToolbarButton(
+                    index = 0,
+                    icon = Icons.Rounded.Search,
+                    contentDescription = "Buscar",
+                    active = isSearching,
+                    enabled = hasSongs,
+                    onClick = onSearchToggle,
+                )
+                ToolbarButton(
+                    index = 1,
+                    icon = Icons.Rounded.Shuffle,
+                    contentDescription = "Aleatorio Todo",
+                    enabled = hasSongs,
+                    onClick = onShuffle,
+                )
+                OverflowMenuButton(
+                    hasSongs = hasSongs,
+                    currentTab = currentTab,
+                    isReorderingAlbums = isReorderingAlbums,
+                    isSyncing = isSyncing,
+                    syncDone = syncDone,
+                    syncTotal = syncTotal,
+                    onPickFolder = onPickFolder,
+                    onShowInfo = onShowInfo,
+                    onToggleReorder = onToggleReorder,
+                    onSyncLyrics = onSyncLyrics,
+                    gridColumns = gridColumns,
+                    onSetGridColumns = onSetGridColumns,
+                )
+            }
         }
     }
 }
+
+private val HeaderButtonSize = 40.dp
+private val HeaderIconSize = 21.dp
+
+/**
+ * Qué botón de la cápsula manda: el que se está pulsando, el recién pulsado
+ * (un instante, para que el gesto se vea aunque el toque sea corto) o el
+ * que está activo (búsqueda abierta, menú desplegado). Ese crece y los
+ * demás encogen.
+ */
+@Stable
+private class ToolbarFocus {
+    var pressed by mutableStateOf<Int?>(null)
+    var pulse by mutableStateOf<Int?>(null)
+    val active = mutableStateMapOf<Int, Boolean>()
+    val focused: Int? get() = pressed ?: pulse ?: active.entries.firstOrNull { it.value }?.key
+}
+
+private val LocalToolbarFocus = compositionLocalOf { ToolbarFocus() }
+
+/**
+ * Cápsula de cristal que agrupa las acciones de la cabecera: degradado
+ * vertical con brillo arriba, borde fino y sombra suave, como las barras
+ * flotantes de iOS.
+ */
+@Composable
+private fun HeaderToolbar(content: @Composable RowScope.() -> Unit) {
+    val focus = remember { ToolbarFocus() }
+    CompositionLocalProvider(LocalToolbarFocus provides focus) {
+        Row(
+            Modifier
+                .height(HeaderButtonSize + 4.dp)
+                .shadow(18.dp, CircleShape, spotColor = Color.Black.copy(alpha = 0.4f), ambientColor = Color.Transparent)
+                .glass()
+                .padding(horizontal = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content,
+        )
+    }
+}
+
+/**
+ * Botón de la cápsula: sin caja propia, solo un halo. Con muelle, el
+ * enfocado se ensancha y agranda el icono mientras los otros encogen.
+ */
+@Composable
+private fun ToolbarButton(
+    index: Int,
+    icon: ImageVector?,
+    contentDescription: String?,
+    onClick: () -> Unit,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    content: (@Composable () -> Unit)? = null,
+) {
+    val aura = animatedAura()
+    val focus = LocalToolbarFocus.current
+    val scope = rememberCoroutineScope()
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    LaunchedEffect(pressed) {
+        if (pressed) focus.pressed = index else if (focus.pressed == index) focus.pressed = null
+    }
+    LaunchedEffect(active) { focus.active[index] = active }
+
+    val focused = focus.focused
+    val springSpec = spring<Float>(dampingRatio = 0.6f, stiffness = 520f)
+    val width by animateDpAsState(
+        when (focused) {
+            null -> HeaderButtonSize
+            index -> HeaderButtonSize + 14.dp
+            else -> HeaderButtonSize - 6.dp
+        },
+        spring(dampingRatio = 0.6f, stiffness = 520f), label = "toolbarWidth",
+    )
+    val iconScale by animateFloatAsState(
+        when (focused) {
+            null -> 1f
+            index -> 1.15f
+            else -> 0.82f
+        },
+        springSpec, label = "toolbarIcon",
+    )
+    val halo by animateColorAsState(
+        when {
+            pressed -> EighthTheme.GlassPressed
+            active -> EighthTheme.accent(aura).copy(alpha = 0.2f)
+            focused == index -> Color.White.copy(alpha = 0.08f)
+            else -> Color.Transparent
+        },
+        tween(160), label = "toolbarHalo",
+    )
+    val tint by animateColorAsState(
+        when {
+            !enabled -> EighthTheme.TextTertiary
+            active -> EighthTheme.accent(aura)
+            else -> EighthTheme.TextPrimary.copy(alpha = 0.9f)
+        },
+        tween(220), label = "toolbarTint",
+    )
+    Box(
+        Modifier
+            .width(width)
+            .height(HeaderButtonSize)
+            .clip(CircleShape)
+            .background(halo)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+                role = Role.Button,
+            ) {
+                focus.pulse = index
+                scope.launch {
+                    delay(TOOLBAR_PULSE_MS)
+                    if (focus.pulse == index) focus.pulse = null
+                }
+                onClick()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.graphicsLayer {
+                scaleX = iconScale
+                scaleY = iconScale
+            },
+        ) {
+            if (content != null) {
+                content()
+            } else if (icon != null) {
+                Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(HeaderIconSize))
+            }
+        }
+    }
+}
+
+private const val TOOLBAR_PULSE_MS = 420L
 
 @Composable
 private fun OverflowMenuButton(
@@ -173,73 +339,47 @@ private fun OverflowMenuButton(
     onShowInfo: () -> Unit,
     onToggleReorder: () -> Unit,
     onSyncLyrics: () -> Unit,
+    gridColumns: Int?,
+    onSetGridColumns: (Int?) -> Unit,
 ) {
     val aura = animatedAura()
     var open by remember { mutableStateOf(false) }
+    var showColumnsDialog by remember { mutableStateOf(false) }
     Box {
-        // Misma caja de vidrio que GlassIconButton (36px exactos, sin tap-target extra).
-        Box(
-            Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color.White.copy(alpha = 0.06f))
-                .border(
-                    BorderStroke(0.7.dp, if (isSyncing) aura.copy(alpha = 0.28f) else EighthTheme.GlassBorder),
-                    RoundedCornerShape(10.dp),
-                )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { open = true },
-            contentAlignment = Alignment.Center,
-        ) {
-            if (isSyncing) {
-                CircularProgressIndicator(
-                    progress = { if (syncTotal > 0) (syncDone.toFloat() / syncTotal).coerceIn(0f, 1f) else 0f },
-                    strokeWidth = 2.dp,
-                    color = aura,
-                    modifier = Modifier.size(16.dp),
-                )
+        ToolbarButton(
+            index = 3,
+            icon = Icons.Rounded.MoreHoriz,
+            contentDescription = "Menú",
+            active = open,
+            onClick = { open = true },
+            content = if (isSyncing) {
+                {
+                    CircularProgressIndicator(
+                        progress = { if (syncTotal > 0) (syncDone.toFloat() / syncTotal).coerceIn(0f, 1f) else 0f },
+                        strokeWidth = 2.dp,
+                        color = aura,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             } else {
-                Icon(
-                    Icons.Rounded.MoreHoriz,
-                    contentDescription = "Menú",
-                    tint = EighthTheme.TextSecondary,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-        DropdownMenu(
+                null
+            },
+        )
+        GlassDropdownMenu(
             expanded = open,
             onDismissRequest = { open = false },
-            containerColor = EighthTheme.GlassSurface.copy(alpha = 0.92f),
-            shape = RoundedCornerShape(EighthTheme.RadiusM),
-            border = BorderStroke(0.7.dp, EighthTheme.GlassBorder),
         ) {
-            DropdownMenuItem(
-                text = { Text("Carpeta de música", fontSize = 14.sp) },
-                leadingIcon = { Icon(Icons.Rounded.FolderOpen, null, tint = aura, modifier = Modifier.size(18.dp)) },
+            GlassMenuItem(
+                label = "Carpeta de música",
+                icon = Icons.Rounded.FolderOpen,
                 onClick = {
                     open = false
                     onPickFolder()
                 },
             )
-            DropdownMenuItem(
-                text = {
-                    Text(
-                        "Sincronizar letras",
-                        fontSize = 14.sp,
-                        color = if (hasSongs) EighthTheme.TextPrimary else EighthTheme.TextTertiary,
-                    )
-                },
-                leadingIcon = {
-                    Icon(
-                        Icons.Rounded.Lyrics,
-                        null,
-                        tint = if (hasSongs) aura else EighthTheme.TextTertiary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                },
+            GlassMenuItem(
+                label = "Sincronizar letras",
+                icon = Icons.Rounded.Lyrics,
                 enabled = hasSongs,
                 onClick = {
                     open = false
@@ -247,42 +387,41 @@ private fun OverflowMenuButton(
                 },
             )
             if (hasSongs && currentTab == ViewTab.ALBUMS) {
-                DropdownMenuItem(
-                    text = { Text(if (isReorderingAlbums) "Guardar orden" else "Ordenar álbumes", fontSize = 14.sp) },
-                    leadingIcon = {
-                        Icon(
-                            if (isReorderingAlbums) Icons.Rounded.Check else Icons.Rounded.SwapVert,
-                            null,
-                            tint = aura,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    },
+                GlassMenuItem(
+                    label = if (isReorderingAlbums) "Guardar orden" else "Ordenar álbumes",
+                    icon = if (isReorderingAlbums) Icons.Rounded.Check else Icons.Rounded.SwapVert,
                     onClick = {
                         open = false
                         onToggleReorder()
                     },
                 )
             }
-            DropdownMenuItem(
-                text = { Text("Información", fontSize = 14.sp) },
-                leadingIcon = { Icon(Icons.Rounded.Info, null, tint = aura, modifier = Modifier.size(18.dp)) },
+            if (hasSongs) {
+                // Un solo punto: abre el mini-menú centrado para elegir.
+                GlassMenuItem(
+                    label = "Columnas del grid",
+                    icon = Icons.Rounded.GridView,
+                    onClick = {
+                        open = false
+                        showColumnsDialog = true
+                    },
+                )
+            }
+            GlassMenuItem(
+                label = "Información",
+                icon = Icons.Rounded.Info,
                 onClick = {
                     open = false
                     onShowInfo()
                 },
             )
         }
+        if (showColumnsDialog) {
+            GridColumnsDialog(
+                current = gridColumns,
+                onSelect = onSetGridColumns,
+                onDismiss = { showColumnsDialog = false },
+            )
+        }
     }
 }
-
-/** Bottom hairline via drawBehind: matches the Dart bottom BorderSide. */
-private fun Modifier.drawBottomHairline(): Modifier = this.then(
-    Modifier.drawBehind {
-        val stroke = 0.8.dp.toPx()
-        drawRect(
-            color = EighthTheme.GlassBorder,
-            topLeft = Offset(0f, size.height - stroke),
-            size = Size(size.width, stroke),
-        )
-    }
-)

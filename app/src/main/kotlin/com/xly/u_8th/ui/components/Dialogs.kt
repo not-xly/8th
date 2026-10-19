@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -34,7 +36,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
 
-/** Diálogo de información con stats y limpieza de caché (port de info_dialog.dart). */
+/** Diálogo de información con stats y limpieza de caché. */
 @Composable
 fun InfoDialog(
     songCount: Int,
@@ -51,8 +53,7 @@ fun InfoDialog(
     ) {
         Column(
             Modifier
-                .background(EighthTheme.GlassSurface.copy(alpha = 0.78f), RoundedCornerShape(EighthTheme.RadiusL))
-                .border(BorderStroke(0.8.dp, EighthTheme.GlassBorder), RoundedCornerShape(EighthTheme.RadiusL))
+                .glassPopup()
                 .padding(start = 20.dp, top = 22.dp, end = 20.dp, bottom = 14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -93,42 +94,17 @@ fun InfoDialog(
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
+                PillButton(
                     "Limpiar caché",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = EighthTheme.TextSecondary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            onClearCache { n ->
-                                onDismiss()
-                                onShowNotification(n)
-                            }
+                    onClick = {
+                        onClearCache { n ->
+                            onDismiss()
+                            onShowNotification(n)
                         }
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    },
                 )
-                Row(
-                    Modifier
-                        .background(aura.copy(alpha = 0.94f), RoundedCornerShape(EighthTheme.RadiusM))
-                        .border(BorderStroke(0.8.dp, aura.copy(alpha = 0.9f)), RoundedCornerShape(EighthTheme.RadiusM))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onDismiss,
-                        )
-                        .padding(horizontal = 18.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        "Entendido",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
-                    )
-                }
+                Spacer(Modifier.width(8.dp))
+                PillButton("Entendido", onDismiss, primary = true)
             }
         }
     }
@@ -162,5 +138,92 @@ private fun StatLine(label: String, value: Int, aura: Color) {
             letterSpacing = (-0.3).sp,
             color = EighthTheme.TextPrimary,
         )
+    }
+}
+
+/** Opciones del grid: etiqueta -> columnas (null = "Pantalla"/auto). */
+private val GRID_COLUMN_OPTIONS: List<Pair<String, Int?>> = listOf(
+    "Pantalla (auto)" to null,
+    "5 columnas" to 5,
+    "6 columnas" to 6,
+    "7 columnas" to 7,
+)
+
+/**
+ * Mini-menú centrado para elegir las columnas del grid de álbumes
+ * ("Pantalla" = auto, o fijas 5/6/7). La opción activa lleva check.
+ */
+@Composable
+fun GridColumnsDialog(
+    current: Int?,
+    onSelect: (Int?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val aura = animatedAura()
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        // Scrim manual: tocar fuera cierra; tocar dentro no.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onDismiss() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                Modifier
+                    .padding(horizontal = 48.dp)
+                    .fillMaxWidth()
+                    .glassPopup()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { /* consume el toque dentro de la tarjeta */ }
+                    .padding(vertical = 8.dp),
+            ) {
+                Text(
+                    "Columnas del grid",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.3.sp,
+                    color = EighthTheme.TextTertiary,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+                )
+                for ((label, value) in GRID_COLUMN_OPTIONS) {
+                    val selected = current == value
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                onSelect(value)
+                                onDismiss()
+                            }
+                            .padding(horizontal = 18.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+                            if (selected) {
+                                Icon(Icons.Rounded.Check, null, tint = aura, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            label,
+                            fontSize = 14.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (selected) EighthTheme.TextPrimary else EighthTheme.TextSecondary,
+                        )
+                    }
+                }
+            }
+        }
     }
 }

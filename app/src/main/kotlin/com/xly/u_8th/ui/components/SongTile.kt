@@ -1,7 +1,6 @@
 package com.xly.u_8th.ui.components
 
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import android.graphics.BitmapFactory
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -23,9 +22,9 @@ import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.Queue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,8 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,27 +48,34 @@ import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
 import com.xly.u_8th.util.AppStrings
 import com.xly.u_8th.util.fmtMs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
  * Decodes embedded album art bytes into an [ImageBitmap] off the main
- * thread, keyed by the bytes identity; null while decoding (placeholder
- * shows until then, crossfaded by the callers).
+ * thread, keyed by content (not identity) and backed by the process-wide
+ * [ArtBitmapMemoryCache]: the initial value comes from the cache when the
+ * art was decoded before, so recycled grid cells repaint instantly instead
+ * of flashing the placeholder. null while decoding.
  */
 @Composable
-fun rememberArtBitmap(art: ByteArray?, sample: Int = 1): ImageBitmap? {
+fun rememberArtBitmap(art: ByteArray?, targetSize: androidx.compose.ui.unit.Dp = 48.dp): ImageBitmap? {
     if (art == null || art.isEmpty()) return null
-    return produceState<ImageBitmap?>(initialValue = null, art, sample) {
-        value = withContext(Dispatchers.Default) {
-            try {
-                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                BitmapFactory.decodeByteArray(art, 0, art.size, opts)?.asImageBitmap()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val targetPx = with(density) { targetSize.roundToPx() }.coerceIn(1, 2048)
+    // `remember` sobre el propio ByteArray: equals de un array es por
+    // identidad (O(1)), no por contenido. Indexar por `art.size` reutilizaba
+    // la clave de otra portada del mismo tamaño en celdas recicladas.
+    val cacheKey = remember(art, targetPx) { ArtBitmapMemoryCache.key("px$targetPx", art) }
+    return androidx.compose.runtime.key(cacheKey) {
+        produceState(initialValue = ArtBitmapMemoryCache.get(cacheKey), cacheKey) {
+            value = try {
+                ArtBitmapMemoryCache.decode(art, targetPx)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (_: Exception) {
                 null
             }
-        }
-    }.value
+        }.value
+    }
 }
 
 fun songSubtitle(song: Song): String {
@@ -109,36 +113,21 @@ fun SongTile(
     onAddToNext: () -> Unit,
     onAddToEnd: () -> Unit,
     modifier: Modifier = Modifier,
+    /** null oculta "Añadir a playlist" del menú. */
+    onAddToPlaylist: (() -> Unit)? = null,
+    /** Dentro de una playlist: "Quitar de la playlist". */
+    onRemoveFromPlaylist: (() -> Unit)? = null,
 ) {
     val aura = animatedAura()
-    val auraSoft = lerp(EighthTheme.PrimarySoft, aura, 0.6f)
-    val fill by animateColorAsState(
-        targetValue = if (isCurrent) EighthTheme.SelectedCard.copy(alpha = 0.92f)
-        else EighthTheme.GlassSurface.copy(alpha = 0.62f),
-        animationSpec = tween(420, easing = EighthTheme.EasingStandard),
-        label = "songTileFill",
-    )
-    val art = rememberArtBitmap(song.albumArt, sample = 2)
+    val auraSoft = EighthTheme.softAura(aura)
+    val accent = EighthTheme.accent(aura)
+    val art = rememberArtBitmap(song.albumArt, targetSize = 44.dp)
 
     Box(modifier.padding(bottom = 7.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(EighthTheme.RadiusM))
-                .background(fill)
-                .then(
-                    if (isCurrent) {
-                        Modifier.border(
-                            BorderStroke(1.dp, aura.copy(alpha = 0.88f)),
-                            RoundedCornerShape(EighthTheme.RadiusM),
-                        )
-                    } else {
-                        Modifier.border(
-                            BorderStroke(0.7.dp, EighthTheme.GlassBorder),
-                            RoundedCornerShape(EighthTheme.RadiusM),
-                        )
-                    }
-                )
+                .glassCard(active = isCurrent, accent = accent)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -191,7 +180,7 @@ fun SongTile(
                     fontSize = 14.sp,
                     fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Medium,
                     letterSpacing = (-0.2).sp,
-                    color = if (isCurrent) auraSoft else EighthTheme.TextPrimary,
+                    color = if (isCurrent) accent else EighthTheme.TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -206,62 +195,51 @@ fun SongTile(
             Spacer(Modifier.width(8.dp))
             var menuOpen by remember { mutableStateOf(false) }
             Box {
-                Box(
-                    Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .border(BorderStroke(0.7.dp, EighthTheme.GlassBorder), RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { menuOpen = true },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Rounded.MoreHoriz,
-                        null,
-                        tint = EighthTheme.TextSecondary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                DropdownMenu(
+                GlassIconButton(
+                    icon = Icons.Rounded.MoreHoriz,
+                    contentDescription = null,
+                    onClick = { menuOpen = true },
+                )
+                GlassDropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false },
-                    containerColor = EighthTheme.GlassSurface.copy(alpha = 0.96f),
-                    shape = RoundedCornerShape(EighthTheme.RadiusS),
-                    border = BorderStroke(0.7.dp, EighthTheme.GlassBorder),
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Reproducir a continuación", fontSize = 13.sp) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.AutoMirrored.Rounded.PlaylistPlay,
-                                null,
-                                tint = EighthTheme.PrimarySoft,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
+                    GlassMenuItem(
+                        label = "Reproducir a continuación",
+                        icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
                         onClick = {
                             menuOpen = false
                             onAddToNext()
                         },
                     )
-                    DropdownMenuItem(
-                        text = { Text("Añadir al final de la cola", fontSize = 13.sp) },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Rounded.Queue,
-                                null,
-                                tint = EighthTheme.Primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        },
+                    GlassMenuItem(
+                        label = "Añadir al final de la cola",
+                        icon = Icons.Rounded.Queue,
                         onClick = {
                             menuOpen = false
                             onAddToEnd()
                         },
                     )
+                    if (onAddToPlaylist != null) {
+                        GlassMenuItem(
+                            label = "Añadir a playlist",
+                            icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            onClick = {
+                                menuOpen = false
+                                onAddToPlaylist()
+                            },
+                        )
+                    }
+                    if (onRemoveFromPlaylist != null) {
+                        GlassMenuItem(
+                            label = "Quitar de la playlist",
+                            icon = Icons.Rounded.RemoveCircleOutline,
+                            onClick = {
+                                menuOpen = false
+                                onRemoveFromPlaylist()
+                            },
+                        )
+                    }
                 }
             }
         }

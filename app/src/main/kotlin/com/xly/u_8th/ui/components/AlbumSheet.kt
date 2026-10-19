@@ -1,15 +1,15 @@
 package com.xly.u_8th.ui.components
 
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -18,18 +18,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,12 +43,11 @@ import com.xly.u_8th.util.AppStrings
 
 /**
  * Espera tras cerrar el sheet antes del trabajo pesado de reproducir: sin
- * esto compite con la animación de bajada (port de AlbumDetailsSheet).
+ * esto compite con la animación de bajada.
  */
 const val SHEET_PLAY_DELAY_MS = 200L
 
-/** Sheet de detalle de álbum (port of widgets/album_details_sheet.dart). */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Sheet de detalle de álbum. */
 @Composable
 fun AlbumDetailsSheet(
     albumName: String,
@@ -64,147 +60,139 @@ fun AlbumDetailsSheet(
     onAddToNext: (Song) -> Unit,
     onAddToEnd: (Song) -> Unit,
     onDismiss: () -> Unit,
+    /** Canciones a añadir a una playlist (una o el álbum entero); null lo oculta. */
+    onAddToPlaylist: ((List<Song>) -> Unit)? = null,
 ) {
     val aura = animatedAura()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = EighthTheme.GlassSurface.copy(alpha = 0.78f),
-        scrimColor = Color.Black.copy(alpha = 0.32f),
-        shape = RoundedCornerShape(topStart = EighthTheme.RadiusL, topEnd = EighthTheme.RadiusL),
-        dragHandle = {
+    GlassBottomSheet(onDismiss = onDismiss, heightFraction = 1f) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val cover = rememberArtBitmap(albumSongs.firstOrNull { it.albumArt != null }?.albumArt, 76.dp)
             Box(
                 Modifier
-                    .padding(top = 8.dp)
-                    .width(36.dp)
-                    .height(4.dp)
-                    .background(Color.White.copy(alpha = 0.22f), RoundedCornerShape(50)),
-            )
-        },
-    ) {
-        Column(
-            Modifier
-                .fillMaxHeight(0.72f)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(34.dp)
-                        .background(aura.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
-                        .border(BorderStroke(0.8.dp, aura.copy(alpha = 0.16f)), RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Rounded.Album, null, tint = aura, modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        albumName,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = (-0.3).sp,
-                        color = EighthTheme.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    // Artista clicable -> álbumes del artista.
-                    val canTapArtist = !artistName.isNullOrEmpty() && artistName.trim().isNotEmpty()
-                    Row(
-                        Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                enabled = canTapArtist,
-                            ) { onArtistTap(artistName!!.trim()) }
-                            .padding(vertical = 1.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            Icons.Rounded.Person,
-                            null,
-                            tint = aura.copy(alpha = 0.9f),
-                            modifier = Modifier.size(13.dp),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            artistName ?: AppStrings.UNKNOWN,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (canTapArtist) aura.copy(alpha = 0.9f) else EighthTheme.TextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (canTapArtist) {
-                            Spacer(Modifier.width(1.dp))
-                            Icon(Icons.Rounded.ChevronRight, null, tint = aura, modifier = Modifier.size(14.dp))
-                        }
-                    }
-                }
-                Box(
-                    Modifier
-                        .shadow(10.dp, RoundedCornerShape(12.dp), spotColor = aura.copy(alpha = 0.24f), ambientColor = Color.Transparent)
-                        .background(aura.copy(alpha = 0.94f), RoundedCornerShape(12.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            onDismiss()
-                            onPlayAlbum(albumName, albumSongs, 0)
-                        }
-                        .padding(6.dp),
-                ) {
-                    Icon(Icons.Rounded.PlayArrow, "Reproducir orden original", tint = Color.White, modifier = Modifier.size(26.dp))
-                }
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier
-                        .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-                        .border(BorderStroke(0.8.dp, EighthTheme.GlassBorder), RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            onDismiss()
-                            onPlayAlbumShuffled(albumName, albumSongs)
-                        }
-                        .padding(8.dp),
-                ) {
-                    Icon(Icons.Rounded.Shuffle, "Reproducir aleatorio", tint = EighthTheme.TextSecondary, modifier = Modifier.size(18.dp))
+                    .size(76.dp)
+                    .shadow(12.dp, RoundedCornerShape(14.dp), spotColor = aura.copy(alpha = 0.4f), ambientColor = Color.Transparent)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(EighthTheme.GlassSurfaceLight)
+                    .border(BorderStroke(0.7.dp, EighthTheme.GlassBorderStrong), RoundedCornerShape(14.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (cover != null) {
+                    Image(cover, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else {
+                    Icon(Icons.Rounded.Album, null, tint = aura, modifier = Modifier.size(30.dp))
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(EighthTheme.GlassBorder),
-            )
-            Spacer(Modifier.height(12.dp))
-            LazyColumn(Modifier.weight(1f)) {
-                items(albumSongs.size) { index ->
-                    val song = albumSongs[index]
-                    val isCurrent = currentSongPath != null && currentSongPath == song.playUri
-                    SongTile(
-                        song = song,
-                        isCurrent = isCurrent,
-                        onTap = {
-                            onDismiss()
-                            onPlayAlbum(albumName, albumSongs, index)
-                        },
-                        onAddToNext = { onAddToNext(song) },
-                        onAddToEnd = { onAddToEnd(song) },
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    albumName,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.4).sp,
+                    color = EighthTheme.TextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // Artista clicable -> álbumes del artista. Se guarda el valor YA
+                // recortado: `canTapArtist` no permite al compilador
+                // hacer smart-cast del parámetro capturado (era un `!!`).
+                val tappedArtist = artistName?.trim().orEmpty()
+                val canTapArtist = tappedArtist.isNotEmpty()
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .pressClickable(enabled = canTapArtist, pressedScale = 0.95f) { onArtistTap(tappedArtist) }
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        artistName ?: AppStrings.UNKNOWN,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (canTapArtist) EighthTheme.accent(aura) else EighthTheme.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
+                    if (canTapArtist) {
+                        Spacer(Modifier.width(1.dp))
+                        Icon(Icons.Rounded.ChevronRight, null, tint = EighthTheme.accent(aura), modifier = Modifier.size(16.dp))
+                    }
                 }
+                val totalMs = albumSongs.sumOf { it.durationMs ?: 0L }
+                val count = albumSongs.size
+                Text(
+                    buildString {
+                        append(if (count == 1) "1 canción" else "$count canciones")
+                        if (totalMs > 0) append(" · ").append(totalMs / 60_000).append(" min")
+                    },
+                    fontSize = 12.sp,
+                    color = EighthTheme.TextTertiary,
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row {
+            PillButton(
+                label = "Reproducir",
+                onClick = {
+                    onDismiss()
+                    onPlayAlbum(albumName, albumSongs, 0)
+                },
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.PlayArrow,
+                primary = true,
+            )
+            Spacer(Modifier.width(10.dp))
+            PillButton(
+                label = "Aleatorio",
+                onClick = {
+                    onDismiss()
+                    onPlayAlbumShuffled(albumName, albumSongs)
+                },
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.Shuffle,
+            )
+            if (onAddToPlaylist != null) {
+                Spacer(Modifier.width(10.dp))
+                GlassIconButton(
+                    icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                    contentDescription = "Añadir álbum a playlist",
+                    onClick = { onAddToPlaylist(albumSongs) },
+                    size = EighthTheme.IconButtonM,
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        SheetDivider()
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(Modifier.weight(1f)) {
+            // `key` por canción: sin él, el estado interno de SongTile
+            // (menú desplegable, decodificación de portada) se reasigna
+            // por posición al cambiar la lista.
+            items(
+                count = albumSongs.size,
+                key = { index -> albumSongs[index].stableId },
+            ) { index ->
+                val song = albumSongs[index]
+                val isCurrent = currentSongPath != null && currentSongPath == song.playUri
+                SongTile(
+                    song = song,
+                    isCurrent = isCurrent,
+                    onTap = {
+                        onDismiss()
+                        onPlayAlbum(albumName, albumSongs, index)
+                    },
+                    onAddToNext = { onAddToNext(song) },
+                    onAddToEnd = { onAddToEnd(song) },
+                    onAddToPlaylist = onAddToPlaylist?.let { add -> { add(listOf(song)) } },
+                )
             }
         }
     }
 }
 
-/** Sheet de álbumes de un artista (port del _showArtistAlbums del screen Dart). */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Sheet de álbumes de un artista. */
 @Composable
 fun ArtistAlbumsSheet(
     artist: String,
@@ -212,85 +200,50 @@ fun ArtistAlbumsSheet(
     onOpenAlbum: (String, List<Song>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = EighthTheme.GlassSurface.copy(alpha = 0.78f),
-        scrimColor = Color.Black.copy(alpha = 0.32f),
-        shape = RoundedCornerShape(topStart = EighthTheme.RadiusL, topEnd = EighthTheme.RadiusL),
-        dragHandle = {
-            Box(
-                Modifier
-                    .padding(top = 8.dp)
-                    .width(36.dp)
-                    .height(4.dp)
-                    .background(Color.White.copy(alpha = 0.22f), RoundedCornerShape(50)),
-            )
-        },
-    ) {
-        Column(
-            Modifier
-                .fillMaxHeight(0.60f)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(34.dp)
-                        .background(EighthTheme.Primary.copy(alpha = 0.14f), RoundedCornerShape(10.dp))
-                        .border(
-                            BorderStroke(0.8.dp, EighthTheme.Primary.copy(alpha = 0.16f)),
-                            RoundedCornerShape(10.dp),
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Rounded.Person, null, tint = EighthTheme.Primary, modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(10.dp))
-                Column {
-                    Text(
-                        artist,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = (-0.3).sp,
-                        color = EighthTheme.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        "${albums.size} ${if (albums.size == 1) "álbum" else "álbumes"}",
-                        fontSize = 12.sp,
-                        color = EighthTheme.TextSecondary,
-                    )
-                }
+    GlassBottomSheet(onDismiss = onDismiss, heightFraction = 0.6f) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TintedIconBadge(Icons.Rounded.Person, animatedAura())
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    artist,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = (-0.3).sp,
+                    color = EighthTheme.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${albums.size} ${if (albums.size == 1) "álbum" else "álbumes"}",
+                    fontSize = 12.sp,
+                    color = EighthTheme.TextSecondary,
+                )
             }
-            Spacer(Modifier.height(12.dp))
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(EighthTheme.GlassBorder),
-            )
-            Spacer(Modifier.height(12.dp))
-            if (albums.isEmpty()) {
-                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text(
-                        "Sin álbumes de este artista",
-                        color = EighthTheme.TextSecondary,
-                        fontSize = 14.sp,
+        }
+        Spacer(Modifier.height(12.dp))
+        SheetDivider()
+        Spacer(Modifier.height(12.dp))
+        if (albums.isEmpty()) {
+            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                Text(
+                    "Sin álbumes de este artista",
+                    color = EighthTheme.TextSecondary,
+                    fontSize = 14.sp,
+                )
+            }
+        } else {
+            LazyColumn(Modifier.weight(1f)) {
+                items(
+                    count = albums.size,
+                    key = { index -> albums[index].first },
+                ) { index ->
+                    val (albumName, albumSongs) = albums[index]
+                    AlbumRow(
+                        albumName = albumName,
+                        albumSongs = albumSongs,
+                        onClick = { onOpenAlbum(albumName, albumSongs) },
                     )
-                }
-            } else {
-                LazyColumn(Modifier.weight(1f)) {
-                    items(albums.size) { index ->
-                        val (albumName, albumSongs) = albums[index]
-                        AlbumRow(
-                            albumName = albumName,
-                            albumSongs = albumSongs,
-                            onClick = { onOpenAlbum(albumName, albumSongs) },
-                        )
-                    }
                 }
             }
         }
@@ -303,26 +256,21 @@ private fun AlbumRow(
     albumSongs: List<Song>,
     onClick: () -> Unit,
 ) {
-    val art = rememberArtBitmap(albumSongs.firstOrNull { it.albumArt != null }?.albumArt, sample = 2)
+    val art = rememberArtBitmap(albumSongs.firstOrNull { it.albumArt != null }?.albumArt, targetSize = 46.dp)
     Box(Modifier.padding(bottom = 6.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(EighthTheme.GlassSurface.copy(alpha = 0.58f), RoundedCornerShape(EighthTheme.RadiusM))
-                .border(BorderStroke(0.8.dp, EighthTheme.GlassBorder), RoundedCornerShape(EighthTheme.RadiusM))
-                .clickable(
-                    interactionSource = remember(albumName) { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClick,
-                )
+                .pressClickable(pressedScale = 0.97f, onClick = onClick)
+                .glassCard()
                 .padding(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (art != null) {
-                androidx.compose.foundation.Image(
+                Image(
                     bitmap = art,
                     contentDescription = null,
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .size(46.dp)
                         .clip(RoundedCornerShape(10.dp)),
