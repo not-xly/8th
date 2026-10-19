@@ -1,10 +1,15 @@
 package com.xly.u_8th
 
 import com.xly.u_8th.data.LibraryRepository
+import com.xly.u_8th.data.escapeLike
+import com.xly.u_8th.data.matchesFolder
+import com.xly.u_8th.data.relativeFolderPath
 import com.xly.u_8th.data.SongMedia
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -82,5 +87,39 @@ class LibraryRepositoryTest {
             listOf(SongMedia(uri = "content://media/1", name = "s.mp3", duration = 0L))
         ).single()
         assertNull(song.durationMs)
+    }
+
+    // ---- Folder matching (MediaStore selection predicates) ----
+
+    @Test
+    fun `relativeFolderPath maps primary roots to relative paths`() {
+        assertEquals("Music/Sub/", relativeFolderPath("/storage/emulated/0/Music/Sub"))
+        assertEquals("Music/", relativeFolderPath("/sdcard/Music"))
+        assertEquals("", relativeFolderPath("/storage/emulated/0"))
+        assertNull(relativeFolderPath("/data/local/tmp"))
+    }
+
+    @Test
+    fun `escapeLike escapes backslash percent and underscore`() {
+        assertEquals("a\\\\b\\%c\\_c", escapeLike("""a\b%c_c"""))
+    }
+
+    @Test
+    fun `matchesFolder accepts data or relative match and rejects others`() {
+        assertTrue(matchesFolder("/storage/emulated/0/Music", "/storage/emulated/0/Music/a.mp3", "Music/a.mp3"))
+        assertTrue(matchesFolder("/storage/emulated/0/Music", "/sdcard/Music/a.mp3", "Music/a.mp3"))
+        assertFalse(matchesFolder("/storage/emulated/0/Music", "/storage/emulated/0/Movies/a.mp3", "Movies/a.mp3"))
+        assertFalse(matchesFolder("/storage/emulated/0/Music", null, "Movies/a.mp3"))
+        assertFalse(matchesFolder("/storage/emulated/0/Music", "/storage/emulated/0/MusicX/a.mp3", "MusicX/a.mp3"))
+        assertTrue(matchesFolder("/storage/emulated/0", "/storage/emulated/0/a.mp3", "a.mp3"))
+    }
+
+    @Test
+    fun `songsFromMedia keeps subfolder tracks under the parent folder`() = runTest {
+        val rows = listOf(
+            SongMedia(uri = "content://media/1", name = "cd1.mp3", path = "/storage/emulated/0/Music/CD1/01.mp3"),
+            SongMedia(uri = "content://media/2", name = "root.mp3", path = "/storage/emulated/0/Music/02.mp3"),
+        )
+        assertEquals(listOf("cd1", "root"), repo.songsFromMedia(rows).map { it.title })
     }
 }

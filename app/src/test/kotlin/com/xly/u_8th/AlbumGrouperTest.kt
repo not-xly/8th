@@ -3,6 +3,7 @@ package com.xly.u_8th
 import com.xly.u_8th.data.AlbumGrouper
 import com.xly.u_8th.domain.Song
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AlbumGrouperTest {
@@ -99,6 +100,64 @@ class AlbumGrouperTest {
         assertEquals(3, AlbumGrouper.resolveTrack(song("a.mp3", title = "03 - Intro")))
         assertEquals(999, AlbumGrouper.resolveTrack(song("a.mp3", title = "Intro")))
         assertEquals(7, AlbumGrouper.resolveTrack(song("/music/07_track.mp3")))
+    }
+
+    @Test
+    fun `unbalanced same-name album keeps strict majority as one album`() {
+        val tracks = listOf(
+            song("1.mp3", album = "Live", artist = "A", track = 1),
+            song("2.mp3", album = "Live", artist = "A", track = 2),
+            song("3.mp3", album = "Live", artist = "A", track = 3),
+            song("4.mp3", album = "Live", artist = "B", track = 4),
+        )
+        val grouped = AlbumGrouper.groupByAlbum(tracks)
+        assertEquals(1, grouped.size)
+        assertEquals("Live", grouped.keys.single())
+    }
+
+    @Test
+    fun `unbalanced majority does not swallow a different real album`() {
+        val tracks = listOf(
+            song("1.mp3", album = "Hits", artist = "A", track = 1),
+            song("2.mp3", album = "Hits", artist = "A", track = 2),
+            song("3.mp3", album = "Hits", artist = "A", track = 3),
+            song("4.mp3", album = "Hits", artist = "B", track = 1),
+            song("5.mp3", album = "Hits", artist = "B", track = 2),
+        )
+        val grouped = AlbumGrouper.groupByAlbum(tracks)
+        assertEquals(2, grouped.size)
+        assertTrue(grouped.keys.any { it.startsWith("Hits — A") })
+        assertTrue(grouped.keys.any { it.startsWith("Hits — B") })
+    }
+
+    @Test
+    fun `compilation folder with complete track numbers stays one album`() {
+        val tracks = (1..4).map { i ->
+            Song(
+                path = "/music/Comp/$i.mp3",
+                contentUri = "/music/Comp/$i.mp3",
+                filePath = "/music/Comp/$i.mp3",
+                album = "Now That's What I Call Music",
+                artist = if (i % 2 == 0) "Artist B" else "Artist A",
+                trackNumber = i,
+            )
+        }
+        val grouped = AlbumGrouper.groupByAlbum(tracks)
+        assertEquals(1, grouped.size)
+        assertEquals(4, grouped.values.single().size)
+    }
+
+    @Test
+    fun `tie without majority splits even with many artists`() {
+        val tracks = listOf(
+            song("1.mp3", album = "Split", artist = "A", track = 1),
+            song("2.mp3", album = "Split", artist = "A", track = 2),
+            song("3.mp3", album = "Split", artist = "B", track = 1),
+            song("4.mp3", album = "Split", artist = "B", track = 2),
+            song("5.mp3", album = "Split", artist = "C", track = 1),
+        )
+        val grouped = AlbumGrouper.groupByAlbum(tracks)
+        assertEquals(3, grouped.size)
     }
 
     private fun song(

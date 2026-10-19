@@ -10,6 +10,15 @@ import org.junit.Test
 class ArtistsTest {
 
     @Test
+    fun bracketedFeatDoesNotLeaveParenthesis() {
+        assertEquals(listOf("Kanye West", "Bon Iver"), Artists.parseArtists("Kanye West (feat. Bon Iver)"))
+        assertEquals(listOf("Kanye West", "Bon Iver", "Chance"), Artists.parseArtists("Kanye West (feat. Bon Iver & Chance)"))
+        assertEquals(listOf("A", "B"), Artists.parseArtists("A [ft. B]"))
+        assertEquals("Kanye West", Artists.primaryArtist("Kanye West (feat. Bon Iver..."))
+        assertEquals(listOf("Tyler, The Creator", "Kali"), Artists.parseArtists("Tyler, The Creator (with Kali)"))
+    }
+
+    @Test
     fun `tyler the creator is a single artist`() {
         assertEquals(listOf("Tyler, The Creator"), Artists.parseArtists("Tyler, The Creator"))
         assertEquals("Tyler, The Creator", Artists.primaryArtist("Tyler, The Creator"))
@@ -61,6 +70,29 @@ class ArtistsTest {
         assertTrue(Artists.albumMatchesArtist(album, listOf("Eminem")))
         assertFalse(Artists.albumMatchesArtist(album, listOf("Rihanna")))
         assertFalse(Artists.albumMatchesArtist(album, listOf("Tyler, The Creator")))
+    }
+
+    @Test
+    fun `joint album belongs to every credited artist`() {
+        val album = listOf(
+            SongFixture.song(artist = "JAY-Z & Kanye West"),
+            SongFixture.song(artist = "Kanye West & JAY-Z feat. Frank Ocean"),
+            SongFixture.song(artist = "JAY-Z, Kanye West"),
+        )
+        assertTrue(Artists.albumMatchesArtist(album, listOf("Kanye West")))
+        assertTrue(Artists.albumMatchesArtist(album, listOf("JAY-Z")))
+        assertFalse(Artists.albumMatchesArtist(album, listOf("Frank Ocean")))
+    }
+
+    @Test
+    fun `intro by a guest does not move the album`() {
+        val album = listOf(
+            SongFixture.song(artist = "Guest"),
+            SongFixture.song(artist = "Owner"),
+            SongFixture.song(artist = "Owner feat. Guest2"),
+        )
+        assertTrue(Artists.albumMatchesArtist(album, listOf("Owner")))
+        assertFalse(Artists.albumMatchesArtist(album, listOf("Guest")))
     }
 
     @Test

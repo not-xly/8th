@@ -4,6 +4,7 @@ import com.xly.u_8th.domain.Song
 import com.xly.u_8th.util.AppStrings
 import com.xly.u_8th.util.fmtMs
 import com.xly.u_8th.util.fnv1a
+import com.xly.u_8th.util.fnv1aBytesSampled
 import com.xly.u_8th.util.fnv1aHex
 import com.xly.u_8th.util.normSearch
 import org.junit.Assert.assertEquals
@@ -40,6 +41,29 @@ class CoreUtilsTest {
         assertTrue(hex.all { it.isDigit() || it in 'a'..'f' })
     }
 
+    @Test(expected = IllegalArgumentException::class)
+    fun `fnv1aHex rejects a width a 32 bit hash cannot produce`() {
+        // Antes: StringIndexOutOfBoundsException al recortar a 9 dígitos.
+        fnv1aHex("x", 9)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `fnv1aBytesSampled rejects zero samples`() {
+        // Antes: ArithmeticException por división entre cero.
+        fnv1aBytesSampled(byteArrayOf(1, 2, 3), samples = 0)
+    }
+
+    @Test
+    fun `fnv1aBytesSampled includes the trailing bytes`() {
+        // Dos contenidos iguales salvo en el último byte deben diferir: el
+        // salto de muestreo no Guarantee tocaría esa posición.
+        val a = ByteArray(4096) { 1 }
+        val b = ByteArray(4096) { 1 }.also { it[4095] = 2 }
+        assertNotEquals(fnv1aBytesSampled(a), fnv1aBytesSampled(b))
+    }
+
+    // ---- Formatters ----
+
     // ---- Formatters ----
 
     @Test
@@ -57,12 +81,29 @@ class CoreUtilsTest {
         assertEquals("0:00", fmtMs(0))
     }
 
+    @Test
+    fun `fmtMs clamps negatives`() {
+        // Antes devolvía "0:-5".
+        assertEquals("0:00", fmtMs(-5_000))
+    }
+
     // ---- Search normalization ----
 
     @Test
     fun `normSearch folds diacritics`() {
         assertEquals("cancion", normSearch("Canción"))
         assertEquals("nino", normSearch("  Niño "))
+    }
+
+    @Test
+    fun `normSearch drops punctuation and collapses whitespace`() {
+        assertEquals("dont stop me now", normSearch("Don't  Stop Me Now!"))
+        assertEquals("a b", normSearch("  a   b  "))
+    }
+
+    @Test
+    fun `normSearch folds letters outside Latin-1`() {
+        assertEquals("lodz", normSearch("Łódź"))
     }
 
     // ---- Song display fallbacks ----
@@ -112,12 +153,28 @@ class CoreUtilsTest {
     }
 
     @Test
+    fun `playbackUriString escapes reserved characters in file paths`() {
+        val song = Song(path = "/music/AC#DC ?100% ñ.mp3")
+        assertEquals("file:///music/AC%23DC%20%3F100%25%20%C3%B1.mp3", song.playbackUriString)
+    }
+
+    @Test
     fun `queueEntryKey is stable for duplicates and reorderings`() {
         fun song(p: String) = Song(path = p, contentUri = p)
         val list = listOf(song("a"), song("b"), song("a"))
         assertEquals("a#0", Song.queueEntryKey(list, 0))
         assertEquals("b#0", Song.queueEntryKey(list, 1))
         assertEquals("a#1", Song.queueEntryKey(list, 2))
+    }
+
+    @Test
+    fun `queueEntryKeys matches the per index helper`() {
+        fun song(p: String) = Song(path = p, contentUri = p)
+        val list = listOf(song("a"), song("b"), song("a"), song("a"))
+        assertEquals(
+            list.indices.map { Song.queueEntryKey(list, it) },
+            Song.queueEntryKeys(list),
+        )
     }
 }
 

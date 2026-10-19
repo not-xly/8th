@@ -2,6 +2,8 @@ package com.xly.u_8th
 
 import com.xly.u_8th.data.LrcLine
 import com.xly.u_8th.data.LrcLogic
+import com.xly.u_8th.data.LrcPrefs
+import com.xly.u_8th.data.LyricsRepository
 import com.xly.u_8th.domain.Song
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -110,6 +112,13 @@ class LyricsRepositoryTest {
     }
 
     @Test
+    fun `cleanTitle keeps brackets whose words only contain a noise tag`() {
+        assertEquals("Song (Olive)", LrcLogic.cleanTitle("Song (Olive)"))
+        assertEquals("Song [Mixture]", LrcLogic.cleanTitle("Song [Mixture]"))
+        assertEquals("Song", LrcLogic.cleanTitle("Song (Live at Wembley)"))
+    }
+
+    @Test
     fun `cleanArtist keeps Tyler, The Creator intact`() {
         assertEquals("Tyler, The Creator", LrcLogic.cleanArtist("Tyler, The Creator"))
     }
@@ -135,13 +144,87 @@ class LyricsRepositoryTest {
     // ---- Fuzzy matching ----
 
     @Test
-    fun `fuzzyContains ignores punctuation and case but drops non-ASCII letters`() {
+    fun `fuzzyContains ignores punctuation, case and accents`() {
         assertTrue(LrcLogic.fuzzyContains("Hello — World, 123!", "hello world 123"))
         assertTrue(LrcLogic.fuzzyContains("周杰伦 - 双色", "双色"))
         assertTrue(LrcLogic.fuzzyContains("ブルー - 아이유", "ブルー"))
         assertTrue(LrcLogic.fuzzyContains("anything", ""))
         assertFalse(LrcLogic.fuzzyContains("hello", "hello world"))
-        // Accented letters are removed, not transliterated (same as the Dart original).
-        assertFalse(LrcLogic.fuzzyContains("Café", "cafe"))
+        // Las tildes se pliegan: "Canción" casa con "Cancion".
+        assertTrue(LrcLogic.fuzzyContains("Café", "cafe"))
+        assertTrue(LrcLogic.fuzzyContains("Cancion de prueba", "Canción"))
+        assertTrue(LrcLogic.fuzzyContains("Кино - Группа крови", "группа"))
+    }
+
+    @Test
+    fun `hasTimestamps tells synced from plain lyrics`() {
+        assertTrue(LrcLogic.hasTimestamps("[00:12.34] Hola"))
+        assertFalse(LrcLogic.hasTimestamps("Hola\nmundo"))
+    }
+
+    @Test
+    fun `normForMatch reduces unsupported scripts to empty`() {
+        assertEquals("tosh", LrcLogic.normForMatch("Tösh"))
+        assertEquals("тош", LrcLogic.normForMatch("Тош"))
+        // Un título en alfabeto no contemplado normaliza a ""; quien llama
+        // (la búsqueda en NetEase) debe comprobarlo ANTES de usar
+        // fuzzyContains, porque con aguja vacía este devuelve true siempre y
+        // aceptaría cualquier candidato.
+        assertEquals("", LrcLogic.normForMatch("ทดสอบ"))
+        assertEquals("", LrcLogic.normForMatch("!!!"))
+        assertEquals("color", LrcLogic.normForMatch("Color!"))
+    }
+
+    @Test
+    fun `sanitize never splits a surrogate pair`() {
+        // 40 emojis = 80 unidades UTF-16: al recortar a 80 el último quedaría
+        // como surrogates alto suelto y el nombre del .lrc sería inválido.
+        val name = LrcLogic.sanitize("😀".repeat(40))
+        assertTrue(name.none { it.isSurrogate() && Character.isHighSurrogate(it) && it == name.last() })
+        assertTrue(name.isNotEmpty())
+    }
+
+    // ---- [offset:] tag ----
+
+    @Test
+    fun `parseLrc without applyOffsetTag ignores offset lines`() {
+        val lines = LrcLogic.parseLrc("[offset:500]\n[00:01]a")
+        assertEquals(1, lines.size)
+        assertEquals(1000L, lines[0].timestampMs)
+    }
+
+    @Test
+    fun `parseLrc applies positive and negative offset tags`() {
+        val shifted = LrcLogic.parseLrc("[offset:+250]\n[00:01]a\n[00:02]b", applyOffsetTag = true)
+        assertEquals(listOf(1250L, 2250L), shifted.map { it.timestampMs })
+        val negative = LrcLogic.parseLrc("[offset:-500]\n[00:01]a", applyOffsetTag = true)
+        assertEquals(500L, negative[0].timestampMs)
+    }
+
+    @Test
+    fun `parseLrc keeps working when offset tag appears without plus sign`() {
+        val lines = LrcLogic.parseLrc("[offset: 1200 ]\n[00:01]a", applyOffsetTag = true)
+        assertEquals(2200L, lines[0].timestampMs)
+    }
+
+    @Test
+    fun `offsetTagFrom and rewriteOffsetTag round-trip`() {
+        val repo = LyricsRepository(null, object : LrcPrefs {
+            override fun treeUri(): String? = null
+            override fun filePaths(): List<String>? = null
+        })
+        val content = "[offset:300]\n[00:01]a"
+        assertEquals(300L, repo.offsetTagFrom(content))
+        assertEquals(-1500L, repo.offsetTagFrom(repo.rewriteOffsetTag(content, -1500L)))
+        assertEquals(0L, repo.offsetTagFrom(repo.rewriteOffsetTag(content, 0L)))
+        val inserted = repo.rewriteOffsetTag("[00:01]a", 250L)
+        assertEquals(250L, repo.offsetTagFrom(inserted))
+        assertTrue(inserted.contains("[00:01]a"))
+    }
+
+    @Test
+    fun `parseLrc clamps absurd negative offsets to keep ordering sane`() {
+        val lines = LrcLogic.parseLrc("[offset:-999999999]\n[00:01]a", applyOffsetTag = true)
+        assertTrue(lines[0].timestampMs <= 0L)
     }
 }
