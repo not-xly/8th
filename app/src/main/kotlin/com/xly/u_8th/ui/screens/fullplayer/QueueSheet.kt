@@ -3,6 +3,9 @@ package com.xly.u_8th.ui.screens.fullplayer
 import com.xly.u_8th.ui.components.SheetDivider
 import com.xly.u_8th.ui.components.TintedIconBadge
 import com.xly.u_8th.ui.components.GlassBottomSheet
+import com.xly.u_8th.ui.components.GlassDropdownMenu
+import com.xly.u_8th.ui.components.GlassMenuItem
+import com.xly.u_8th.ui.components.PillButton
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -20,9 +23,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -37,7 +41,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -52,16 +56,14 @@ import com.xly.u_8th.playback.PlayerBus
 import com.xly.u_8th.ui.components.GlassIconButton
 import com.xly.u_8th.ui.components.glassCard
 import com.xly.u_8th.ui.components.SongArtThumb
-import com.xly.u_8th.ui.components.pressClickable
+import com.xly.u_8th.ui.components.songSubtitle
 import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
-import com.xly.u_8th.util.AppStrings
-import com.xly.u_8th.util.fmtMs
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Bottom sheets owned by the full player: the playback queue (tap to jump,
- * long-press or handle drag to reorder, X to remove) and the best-effort
+ * long-press or handle drag to reorder, ··· menu to remove) and the best-effort
  * artist albums sheet (the primary artist flow lives in the main screen
  * cluster, so albums here come from the played-songs catalog).
  */
@@ -134,21 +136,47 @@ fun QueueSheetForFullPlayer(onDismiss: () -> Unit) {
     // ir por delante del índice del servicio.
     val playingKey = remember(queue, queueIndex) { Song.queueEntryKeys(queue).getOrNull(queueIndex) }
 
-    GlassBottomSheet(onDismiss = onDismiss, heightFraction = 0.66f) {
+    // Pantalla completa, como el resto de fichas (álbum, playlist, artista).
+    GlassBottomSheet(onDismiss = onDismiss, heightFraction = 1f) {
+        // Cabecera con el mismo lenguaje que PlaylistDetailsSheet/AlbumDetailsSheet.
         Row(verticalAlignment = Alignment.CenterVertically) {
+            val current = queue.getOrNull(queueIndex)
+            val coverShape = RoundedCornerShape(15.dp)
+            Box(
+                Modifier.shadow(12.dp, coverShape, spotColor = aura.copy(alpha = 0.4f), ambientColor = Color.Transparent),
+            ) {
+                if (current != null) {
+                    SongArtThumb(current, isCurrent = false, size = 76.dp, radius = 15.dp)
+                } else {
+                    TintedIconBadge(Icons.AutoMirrored.Rounded.QueueMusic, tint = EighthTheme.accent(aura))
+                }
+            }
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     "A continuación",
                     color = EighthTheme.TextPrimary,
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.5).sp,
+                    letterSpacing = (-0.4).sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                if (queueLabel.isNotBlank()) {
+                    Text(
+                        queueLabel,
+                        color = EighthTheme.softAura(aura, 0.8f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 val remainingMs = queue.drop(queueIndex + 1).sumOf { it.durationMs ?: 0L }
                 Text(
                     buildString {
-                        if (queueLabel.isNotBlank()) append(queueLabel).append(" · ")
                         append("${(queueIndex + 1).coerceAtMost(queue.size)} de ${queue.size}")
+                        append(if (queue.size == 1) " canción" else " canciones")
                         if (remainingMs > 0) append(" · ").append(remainingMs / 60_000).append(" min")
                     },
                     color = EighthTheme.TextTertiary,
@@ -157,15 +185,21 @@ fun QueueSheetForFullPlayer(onDismiss: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Spacer(Modifier.width(10.dp))
-            GlassIconButton(
-                icon = Icons.Rounded.Shuffle,
-                contentDescription = if (shuffleEnabled) "Restaurar orden original" else "Aleatorizar cola",
+        }
+        Spacer(Modifier.height(14.dp))
+        // Misma fila de pastillas que PlaylistDetailsSheet; encendida = relleno de acento.
+        Row {
+            PillButton(
+                label = "Aleatorio",
                 onClick = { connection.launch { setShuffled(!shuffleEnabled) } },
-                active = shuffleEnabled,
-                size = EighthTheme.IconButtonM,
+                modifier = Modifier.weight(1f),
+                icon = Icons.Rounded.Shuffle,
+                primary = shuffleEnabled,
+                enabled = queue.isNotEmpty(),
             )
         }
+        Spacer(Modifier.height(12.dp))
+        SheetDivider()
         Spacer(Modifier.height(12.dp))
         // Claves precalculadas: queueEntryKey() es O(index) y LazyList pide la
         // clave de cada elemento en cada pasada de layout.
@@ -213,7 +247,6 @@ private fun QueueRow(
     onTap: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    val rowShape = RoundedCornerShape(EighthTheme.RadiusM)
     val accent = EighthTheme.accent(aura)
     // La fila conserva su composición al cambiar de índice (clave estable):
     // los detectores no se reinician y leen siempre los callbacks actuales.
@@ -223,7 +256,7 @@ private fun QueueRow(
     val tap by rememberUpdatedState(onTap)
     Box(
         Modifier
-            .padding(bottom = 2.dp)
+            .padding(bottom = 7.dp)
             .zIndex(if (isDragging) 1f else 0f)
             .graphicsLayer {
                 // Lo ya escuchado queda atenuado por encima de la actual.
@@ -277,22 +310,18 @@ private fun QueueRow(
                 }
             },
     ) {
+        // Misma fila que SongTile (lista de PlaylistDetailsSheet): tarjeta de
+        // cristal teñida en la que suena y menú ··· para quitar. No se usa
+        // SongTile tal cual: su clickable consumiría el down y anularía el
+        // arrastre por pulsación larga, y su menú no tiene "Quitar de la cola".
         Row(
             Modifier
                 .fillMaxWidth()
-                // Filas planas: solo la que suena (o la que se arrastra)
-                // lleva tarjeta, como en las listas de Apple Music.
-                .then(
-                    if (isPlaying || isDragging) {
-                        Modifier.glassCard(active = isPlaying, accent = accent, shape = rowShape)
-                    } else {
-                        Modifier.clip(rowShape)
-                    },
-                )
-                .padding(start = 6.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                .glassCard(active = isPlaying, accent = accent)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SongArtThumb(song, isCurrent = isPlaying, size = 44.dp)
+            SongArtThumb(song, isCurrent = false, size = 44.dp, radius = EighthTheme.RadiusS)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -304,29 +333,42 @@ private fun QueueRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                val who = song.artist ?: song.album ?: AppStrings.UNKNOWN
-                val subtitle = song.durationMs?.takeIf { it > 0 }?.let { "$who • ${fmtMs(it)}" } ?: who
                 Text(
-                    subtitle,
+                    songSubtitle(song),
                     color = EighthTheme.TextSecondary,
                     fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Box(
-                Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .pressClickable(pressedScale = 0.8f, onClick = onRemove),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.Close, "Quitar de la cola", tint = EighthTheme.TextTertiary, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(8.dp))
+            // GlassIconButton consume el down (pressClickable), así que abrir
+            // el menú nunca inicia el arrastre de la fila.
+            var menuOpen by remember { mutableStateOf(false) }
+            Box {
+                GlassIconButton(
+                    icon = Icons.Rounded.MoreHoriz,
+                    contentDescription = "Opciones de la canción",
+                    onClick = { menuOpen = true },
+                )
+                GlassDropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) {
+                    GlassMenuItem(
+                        label = "Quitar de la cola",
+                        icon = Icons.Rounded.RemoveCircleOutline,
+                        onClick = {
+                            menuOpen = false
+                            onRemove()
+                        },
+                    )
+                }
             }
-            Spacer(Modifier.width(2.dp))
+            Spacer(Modifier.width(4.dp))
             Box(
                 Modifier
-                    .size(36.dp)
+                    .size(EighthTheme.IconButtonS)
                     .pointerInput(Unit) {
                         detectDragGestures(
                             onDragStart = { startDrag() },
