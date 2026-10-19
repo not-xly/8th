@@ -27,6 +27,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -195,19 +196,22 @@ internal fun SyncedLyricsList(
                 ) {
                     // Tipografía fija en todas las líneas: solo animan escala y
                     // color, así la línea activa nunca cambia de ajuste.
-                    Text(
-                        line.text.ifBlank { "♪" },
-                        color = textColor,
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        lineHeight = 31.sp,
-                        letterSpacing = (-0.4).sp,
-                        modifier = Modifier.graphicsLayer {
+                    Column(
+                        Modifier.graphicsLayer {
                             scaleX = scale
                             scaleY = scale
                             transformOrigin = TransformOrigin(0f, 0.5f)
                         },
-                    )
+                    ) {
+                        Text(
+                            line.text.ifBlank { "♪" },
+                            color = textColor,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 31.sp,
+                            letterSpacing = (-0.4).sp,
+                        )
+                    }
                 }
             }
         }

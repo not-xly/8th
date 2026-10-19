@@ -266,6 +266,60 @@ class LyricsRepository(
         }
     }
 
+    // ---- Search in cached lyrics ----
+
+    /**
+     * Letras en disco ya normalizadas (clave de fichero -> líneas). Se llena
+     * en la primera búsqueda y se descarta al escribir cualquier .lrc.
+     */
+    @Volatile
+    private var lyricIndex: Map<String, List<LyricsSearch.Line>>? = null
+
+    /** Sube en cada escritura: un índice construido durante una escritura no se guarda. */
+    private val lyricIndexGen = AtomicInteger(0)
+
+    fun invalidateLyricIndex() {
+        lyricIndexGen.incrementAndGet()
+        lyricIndex = null
+    }
+
+    private suspend fun lyricIndex(): Map<String, List<LyricsSearch.Line>> {
+        lyricIndex?.let { return it }
+        val gen = lyricIndexGen.get()
+        val built = HashMap<String, List<LyricsSearch.Line>>()
+        val dir = getLrcDir()
+        for (file in dir.listFiles().orEmpty()) {
+            currentCoroutineContext().ensureActive()
+            if (!file.isFile) continue
+            val key = LyricsSearch.keyForFileName(file.name) ?: continue
+            val lines = try {
+                LyricsSearch.linesOf(file.readText())
+            } catch (_: Exception) {
+                continue
+            }
+            if (lines.isNotEmpty()) built[key] = lines
+        }
+        if (lyricIndexGen.get() == gen) lyricIndex = built
+        return built
+    }
+
+    /**
+     * Canciones de [songs] cuya letra YA guardada en disco contiene [query]
+     * (mínimo [LyricsSearch.MIN_QUERY_CHARS] caracteres normalizados), con la
+     * línea que coincide. No descarga nada: lo que no está en caché no sale.
+     */
+    suspend fun searchLyrics(query: String, songs: List<Song>, limit: Int = 50): List<Pair<Song, String>> =
+        withContext(Dispatchers.IO) {
+            if (LyricsSearch.normalizedQuery(query) == null) return@withContext emptyList()
+            try {
+                LyricsSearch.search(query, songs, lyricIndex(), limit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+
     // ---- Save / purge / sync ----
 
     private fun validatedLrc(text: String): String? {
@@ -277,6 +331,9 @@ class LyricsRepository(
 
     private suspend fun writeAtomic(file: File, content: String): Boolean = withContext(Dispatchers.IO) {
         currentCoroutineContext().ensureActive()
+        // Toda escritura (descarga, importación, edición, desfase) pasa por
+        // aquí: el índice de búsqueda en letras se rehace en la próxima búsqueda.
+        invalidateLyricIndex()
         try {
             file.parentFile?.mkdirs()
             val tmp = File(file.parentFile, file.name + ".tmp")
@@ -290,6 +347,7 @@ class LyricsRepository(
                 }
             } finally {
                 if (tmp.exists()) runCatching { tmp.delete() }
+                invalidateLyricIndex()
             }
         } catch (e: CancellationException) {
             throw e

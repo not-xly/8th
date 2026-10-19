@@ -103,7 +103,8 @@ private sealed interface LyricsAction {
 @Composable
 private fun SongLyrics(song: Song, modifier: Modifier) {
     val context = LocalContext.current
-    val repository = remember(context) { EighthApplication.get(context).lyricsRepository }
+    val app = remember(context) { EighthApplication.get(context) }
+    val repository = app.lyricsRepository
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val connection = rememberPlayerConnection()
     var state by remember { mutableStateOf<LyricsUiState>(LyricsUiState.Loading) }
@@ -178,6 +179,9 @@ private fun SongLyrics(song: Song, modifier: Modifier) {
 
     val loadedState = state as? LyricsUiState.Loaded
     val synced = loadedState?.synced == true
+
+    // Traducción opcional: solo letras en inglés; ante cualquier fallo (sin
+    // red para el modelo, ML Kit no disponible) se queda el original.
     var showOffset by remember { mutableStateOf(false) }
 
     fun openImport() {
@@ -318,10 +322,12 @@ private fun SongLyrics(song: Song, modifier: Modifier) {
                         Spacer(Modifier.width(10.dp))
                         GlassPill(Icons.Rounded.FileOpen, "Importar .lrc", enabled = !busy && pendingImportSong == null, onClick = { openImport() })
                     }
-                    is LyricsUiState.Loaded -> if (current.synced) {
-                        SyncedLyricsList(current.lines, connection, offsetMs)
-                    } else {
-                        PlainLyrics(current.lines)
+                    is LyricsUiState.Loaded -> {
+                        if (current.synced) {
+                            SyncedLyricsList(current.lines, connection, offsetMs)
+                        } else {
+                            PlainLyrics(current.lines)
+                        }
                     }
                 }
             }
