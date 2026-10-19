@@ -2,62 +2,41 @@ package com.xly.u_8th.playback
 
 import com.xly.u_8th.domain.LoopMode
 import com.xly.u_8th.domain.Song
+import kotlinx.coroutines.CancellationException
 import kotlin.random.Random
 
-/**
- * Port of the Dart AudioPlayerService queue logic (lib/src/services/
- * audio_player_service.dart). Pure Kotlin: all player access goes through
- * [PlayerOps] so the class is JVM-unit-testable.
- */
-class QueueManager(private val player: PlayerOps) {
+class QueueManager(private val player: PlayerOps, private val random: Random = Random.Default) {
 
-    /** Mutable in place (like the Dart QueueState): views that already hold
-     *  the reference see changes on the next emit instead of keeping the
-     *  old list. */
     class QueueState(var list: MutableList<Song>, var index: Int, var label: String)
 
     val queueState = QueueState(mutableListOf(), 0, "")
-
-    /** Physical order the queue had before any shuffle ("Aleatorio Todo"). */
     var originalOrder: List<String> = emptyList()
-
-    /** true while the loaded queue is shuffled (natively or physically). */
-    var queueShuffled: Boolean = false
-
-    var loopMode: LoopMode = LoopMode.ALL
-
-    /**
-     * Bumped on every queue mutation (set/insert/remove/move/shuffle). State
-     * syncs recompute their cheap queue hash only when this changes.
-     */
-    var queueRevision: Int = 0
+    var queueShuffled = false
+    var loopMode = LoopMode.ALL
+    var queueRevision = 0
         private set
 
+    private var entryIds = mutableListOf<Long>()
+    private var originalIds = emptyList<Long>()
+    private var nextId = 0L
+    private val failedEntries = mutableSetOf<Long>()
+    private var recoveryAttempts = 0
+
     val currentSong: Song?
-        get() {
-            val list = queueState.list
-            return if (list.isNotEmpty() && queueState.index in list.indices) {
-                list[queueState.index]
-            } else {
-                null
-            }
-        }
+        get() = queueState.list.getOrNull(queueState.index)
 
-    private val random = Random(System.nanoTime())
-
-    /** Shuffle order of queue positions; see [_skip]. */
-    private var shuffleOrder: List<Int> = emptyList()
-    private var shuffleOrderRevision = -1
+    private fun ensureEntries() {
+        if (entryIds.size == queueState.list.size) return
+        entryIds = queueState.list.map { nextId++ }.toMutableList()
+        originalIds = entryIds.toList()
+    }
 
     private fun touchQueue() {
         queueRevision++
+        val songsById = entryIds.zip(queueState.list).toMap()
+        originalOrder = originalIds.mapNotNull { songsById[it]?.playUri }
     }
 
-    /**
-     * Loads a new queue. Returns how many songs failed to load (kept at 0:
-     * ExoPlayer resolves URIs lazily, so there is no open step that can drop
-     * items and misalign the index, unlike the just_audio port).
-     */
     suspend fun playQueueList(
         songs: List<Song>,
         initialIndex: Int = 0,
@@ -68,277 +47,221 @@ class QueueManager(private val player: PlayerOps) {
         currentSongBefore: Song? = null,
     ): Int {
         if (songs.isEmpty()) return 0
-
-        val prevPath = currentSongBefore?.playUri ?: currentSong?.playUri
-        val clamped = initialIndex.coerceIn(0, songs.size - 1)
-
-        val sameSong = resumeIfSameSong && prevPath != null && songs[clamped].playUri == prevPath
-        val initialPos = if (sameSong) player.positionMs else 0L
-
-        // All songs are kept here; the index never shifts (see kdoc).
-        val keptSongs = songs
-        val keptIndex = clamped
-        val failed = 0
-
-        // Snapshot for rollback: if the player load fails, the UI must not be
-        // left diverged from the player (before, queueState was updated first
-        // and the catch only logged).
-        val prevList = queueState.list
-        val prevIndex = queueState.index
-        val prevLabel = queueState.label
-        val prevOrder = originalOrder
-        val prevShuffled = queueShuffled
-        queueState.list = keptSongs.toMutableList()
-        queueState.index = keptIndex
-        queueState.label = label
-        touchQueue()
-        if (!shuffled) {
-            originalOrder = keptSongs.map { it.playUri }
+        val selected = initialIndex.coerceIn(songs.indices)
+        val previous = currentSongBefore ?: currentSong
+        val position = if (resumeIfSameSong && previous?.playUri == songs[selected].playUri) {
+            player.positionMs
+        } else {
+            0L
         }
-        queueShuffled = shuffled
+        val order = if (shuffled) {
+            listOf(selected) + songs.indices.filter { it != selected }.shuffled(random)
+        } else {
+            songs.indices.toList()
+        }
+        val ids = songs.map { nextId++ }
+        val state = PlaybackSession(
+            songs = order.map { songs[it] },
+            entryIds = order.map { ids[it] },
+            originalIds = ids,
+            index = if (shuffled) 0 else selected,
+            positionMs = position,
+            label = label,
+            shuffled = shuffled,
+            loopMode = loopMode,
+        )
+        return if (loadSession(state, autoPlay)) 0 else songs.size
+    }
 
+    private fun loadSession(state: PlaybackSession, autoPlay: Boolean): Boolean {
+        val before = snapshot()
+        applyState(state)
+        if (!autoPlay) player.pause()
         val replaced = try {
-            player.replaceItems(queueState.list, keptIndex, initialPos)
+            if (state.songs.isEmpty()) {
+                player.pause()
+                player.clearItems()
+                true
+            } else {
+                player.replaceItems(state.songs, state.index, state.positionMs)
+            }
+        } catch (e: CancellationException) {
+            applyState(before)
+            throw e
         } catch (_: Exception) {
             false
         }
         if (!replaced) {
-            // Roll back to the previous state to keep UI vs player consistent.
-            queueState.list = prevList
-            queueState.index = prevIndex
-            queueState.label = prevLabel
-            originalOrder = prevOrder
-            queueShuffled = prevShuffled
-            return songs.size
+            applyState(before)
+            return false
         }
-        // New queue = intentional physical order: native shuffle goes off
-        // (whoever un-shuffles after a physically shuffled queue expects the
-        // list order).
+        resetErrorRecovery()
         player.setShuffleEnabled(false)
-        regenerateShuffleOrder(queueState.list.size)
         player.setRepeatMode(loopMode)
-        if (autoPlay) {
-            player.play()
-        }
-        return failed
-    }
-
-    fun playNext() = _skip(1)
-
-    fun playPrevious() = _skip(-1)
-
-    /**
-     * Robust skip for rapid taps. The destination is computed from
-     * [QueueState.index] (updated optimistically here) and NOT from
-     * player.currentIndex, which does not change until the previous seek
-     * finishes loading: before, several rapid "next" taps recomputed the
-     * same destination and title/art never advanced.
-     */
-    private fun _skip(direction: Int) {
-        val n = queueState.list.size
-        if (n == 0) return
-        var target = skipTargetFor(queueState.index, n, direction)
-        // Native shuffle active: walk the player's random order.
-        if (player.shuffleEnabled) {
-            val order = ensureShuffleOrder(n)
-            val pos = order.indexOf(queueState.index)
-            if (pos >= 0) {
-                var nextPos = pos + direction
-                if (nextPos < 0) nextPos = n - 1
-                if (nextPos >= n) nextPos = 0
-                target = order[nextPos]
-            }
-        }
-        queueState.index = target
-        if (player.itemCount == 0) return
-        val ok = try {
-            player.seekToIndex(target)
-        } catch (_: Exception) {
-            false
-        }
-        if (!ok) {
-            // Seek failed (broken file…): fall back to the player's real
-            // index so the UI doesn't point at a song that isn't playing.
-            val real = player.currentIndex
-            if (real >= 0 && real < queueState.list.size) {
-                queueState.index = real
-            }
-        }
-    }
-
-    suspend fun addToQueueNext(song: Song): Boolean {
-        if (queueState.list.isEmpty() || player.itemCount == 0) {
-            playQueueList(listOf(song), initialIndex = 0, label = "Cola personalizada")
-            return true
-        }
-        val insertPos = (queueState.index + 1).coerceIn(0, queueState.list.size)
-        val added = try {
-            player.addItem(song, insertPos)
-        } catch (_: Exception) {
-            false
-        }
-        if (!added) return false
-        queueState.list.add(insertPos, song)
-        touchQueue()
+        if (autoPlay && state.songs.isNotEmpty()) player.play() else player.pause()
         return true
     }
 
-    suspend fun addToQueueEnd(song: Song): Boolean {
-        if (queueState.list.isEmpty() || player.itemCount == 0) {
-            playQueueList(listOf(song), initialIndex = 0, label = "Cola personalizada")
-            return true
+    private fun applyState(state: PlaybackSession) {
+        queueState.list = state.songs.toMutableList()
+        queueState.index = state.index
+        queueState.label = state.label
+        entryIds = state.entryIds.toMutableList()
+        originalIds = state.originalIds.toList()
+        nextId = maxOf(nextId, (entryIds.maxOrNull() ?: -1L) + 1L)
+        queueShuffled = state.shuffled
+        loopMode = state.loopMode
+        touchQueue()
+    }
+
+    fun snapshot(): PlaybackSession {
+        ensureEntries()
+        return PlaybackSession(
+            songs = queueState.list.toList(),
+            entryIds = entryIds.toList(),
+            originalIds = originalIds.toList(),
+            index = queueState.index,
+            positionMs = player.positionMs.coerceAtLeast(0L),
+            label = queueState.label,
+            shuffled = queueShuffled,
+            loopMode = loopMode,
+        )
+    }
+
+    fun restoreSession(state: PlaybackSession): Boolean = loadSession(state, autoPlay = false)
+
+    fun playNext() = skip(1)
+
+    fun playPrevious() = skip(-1)
+
+    private fun skip(direction: Int) {
+        val n = queueState.list.size
+        if (n == 0) return
+        val target = skipTargetFor(queueState.index, n, direction)
+        if (loopMode == LoopMode.OFF && queueState.index + direction !in 0 until n) return
+        seekToIndex(target)
+    }
+
+    suspend fun addToQueueNext(song: Song): Boolean =
+        add(song, (queueState.index + 1).coerceIn(0, queueState.list.size))
+
+    suspend fun addToQueueEnd(song: Song): Boolean = add(song, queueState.list.size)
+
+    private suspend fun add(song: Song, index: Int): Boolean {
+        if (queueState.list.isEmpty()) {
+            return playQueueList(listOf(song), label = "Cola personalizada") == 0
         }
-        val insertPos = queueState.list.size
+        ensureEntries()
         val added = try {
-            player.addItem(song, insertPos)
+            player.addItem(song, index)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             false
         }
         if (!added) return false
-        queueState.list.add(song)
+        val id = nextId++
+        queueState.list.add(index, song)
+        entryIds.add(index, id)
+        originalIds = if (queueShuffled) originalIds + id else entryIds.toList()
         touchQueue()
         return true
     }
 
     fun removeFromQueue(index: Int) {
-        if (index < 0 || index >= queueState.list.size) return
-        val removingCurrent = index == queueState.index
-        if (player.itemCount == 0) {
-            queueState.list.removeAt(index)
-            if (queueState.list.isEmpty()) {
-                resetQueueState()
-            } else if (index < queueState.index) {
-                queueState.index--
-            } else if (removingCurrent) {
-                queueState.index = queueState.index.coerceIn(0, queueState.list.size - 1)
-            }
-            touchQueue()
-            // Keeps originalOrder coherent (stable playUri keys).
-            pruneOriginalOrder()
-            return
-        }
-        if (queueState.list.size == 1) {
-            player.stopForEnd()
-            player.clearItems()
-            resetQueueState()
-            touchQueue()
-            return
-        }
-        player.removeItemAt(index)
+        if (index !in queueState.list.indices) return
+        ensureEntries()
+        val currentIndex = queueState.index
+        val id = entryIds.removeAt(index)
         queueState.list.removeAt(index)
+        originalIds = originalIds.filter { it != id }
+        queueState.index = when {
+            queueState.list.isEmpty() -> 0
+            index < currentIndex -> currentIndex - 1
+            else -> currentIndex.coerceAtMost(queueState.list.lastIndex)
+        }
+        if (queueState.list.isEmpty()) {
+            queueState.label = ""
+            queueShuffled = false
+        }
         touchQueue()
-        if (index < queueState.index) {
-            queueState.index--
-        } else if (removingCurrent) {
-            // The player auto-advances to the next item; sync with the real
-            // player index instead of clamping blindly.
-            val real = player.currentIndex
-            queueState.index = if (real in queueState.list.indices) {
-                real
+        if (player.itemCount > 0) {
+            if (queueState.list.isEmpty()) {
+                player.pause()
+                player.clearItems()
             } else {
-                queueState.index.coerceIn(0, queueState.list.size - 1)
+                player.removeItemAt(index)
             }
         }
-        pruneOriginalOrder()
     }
 
     fun reorderQueue(oldIndex: Int, newIndex: Int) {
-        if (oldIndex < 0 || oldIndex >= queueState.list.size) return
-        if (newIndex < 0 || newIndex > queueState.list.size) return
-        // newIndex arrives as the post-removal position (may equal length for
-        // an append): adjust before using it.
-        var adjusted = newIndex
-        if (oldIndex < adjusted) adjusted -= 1
-        if (oldIndex == adjusted) return
-        val currentUri = currentSong?.playUri
-        if (player.itemCount == 0) {
-            val item = queueState.list.removeAt(oldIndex)
-            queueState.list.add(adjusted, item)
-            touchQueue()
-            // Re-find the current song's index by uri (robust, avoids
-            // off-by-one).
-            if (currentUri != null) {
-                val newIdx = queueState.list.indexOfFirst { it.playUri == currentUri }
-                if (newIdx != -1) queueState.index = newIdx
-            }
-            return
-        }
-        player.moveItem(oldIndex, adjusted)
+        if (oldIndex !in queueState.list.indices || newIndex !in 0..queueState.list.size) return
+        val target = if (oldIndex < newIndex) newIndex - 1 else newIndex
+        if (oldIndex == target) return
+        ensureEntries()
+        val currentId = entryIds.getOrNull(queueState.index)
         val item = queueState.list.removeAt(oldIndex)
-        queueState.list.add(adjusted, item)
+        queueState.list.add(target, item)
+        val id = entryIds.removeAt(oldIndex)
+        entryIds.add(target, id)
+        queueState.index = entryIds.indexOf(currentId).coerceAtLeast(0)
+        if (!queueShuffled) originalIds = entryIds.toList()
         touchQueue()
-        if (currentUri != null) {
-            val newIdx = queueState.list.indexOfFirst { it.playUri == currentUri }
-            if (newIdx != -1) queueState.index = newIdx
-        }
+        if (player.itemCount > 0) player.moveItem(oldIndex, target)
     }
 
-    /**
-     * Enables the player's NATIVE shuffle: next/prev follow the random order
-     * without rebuilding the playlist, so there is no reload hiccup on the
-     * current song. [QueueState.list] order does NOT change: the queue view
-     * keeps showing the original order (standard player behavior).
-     */
     fun shuffleAllQueue(): Int {
-        if (queueState.list.size <= 1) return 0
-        if (player.itemCount == 0) {
-            // No player loaded (tests / transient state): flag only.
-            queueShuffled = true
-            return 0
-        }
-        try {
-            // Keeps the current song as current and shuffles the rest.
-            player.setShuffleEnabled(true)
-        } catch (_: Exception) {
-        }
-        regenerateShuffleOrder(queueState.list.size)
-        queueShuffled = true
-        return 0
+        if (queueShuffled || queueState.list.size <= 1) return 0
+        val state = snapshot()
+        val order = listOf(state.index) + state.songs.indices.filter { it != state.index }.shuffled(random)
+        val shuffled = state.copy(
+            songs = order.map { state.songs[it] },
+            entryIds = order.map { state.entryIds[it] },
+            originalIds = state.entryIds,
+            index = 0,
+            shuffled = true,
+        )
+        return if (reorderSession(shuffled)) 0 else state.songs.size
     }
 
     suspend fun restoreOriginalOrder(): Int {
         if (!queueShuffled || queueState.list.isEmpty()) return 0
-        // Native shuffle: turning it off restores the original order
-        // instantly, without reloading anything (the list was never
-        // physically reordered).
-        if (player.shuffleEnabled) {
-            try {
-                player.setShuffleEnabled(false)
-            } catch (_: Exception) {
-            }
-            queueShuffled = false
-            regenerateShuffleOrder(queueState.list.size)
-            return 0
-        }
-        // Physically shuffled queue (e.g. after "Aleatorio Todo"): rebuild
-        // the original order (same behavior as before, includes a reload).
-        if (originalOrder.isEmpty()) return 0
-        val (restored, idx) = restoredOrderFor(queueState.list, originalOrder, currentSong?.playUri)
-        if (restored.isEmpty()) return 0
-        val failed = playQueueList(
-            restored,
-            initialIndex = idx,
-            label = queueState.label,
-            autoPlay = player.playing,
-            resumeIfSameSong = true,
-            currentSongBefore = currentSong,
+        val state = snapshot()
+        val currentId = state.entryIds[state.index]
+        val byId = state.entryIds.zip(state.songs).toMap()
+        val originalSet = state.originalIds.toHashSet()
+        val ids = state.originalIds.filter { it in byId } + state.entryIds.filter { it !in originalSet }
+        val restored = state.copy(
+            songs = ids.map { byId.getValue(it) },
+            entryIds = ids,
+            originalIds = ids,
+            index = ids.indexOf(currentId),
+            shuffled = false,
         )
-        queueShuffled = false
-        return failed
-    }
-
-    suspend fun toggleShuffle(enable: Boolean) {
-        if (enable) {
-            shuffleAllQueue()
-        } else {
-            restoreOriginalOrder()
-        }
+        return if (reorderSession(restored)) 0 else state.songs.size
     }
 
     /**
-     * Cycle order as in the Dart app: off→all, all→one, one→off, i.e.
-     * starting from ALL it goes ALL→ONE→OFF→ALL.
+     * Mismo contenido en otro orden (aleatorio / orden original): cambia lo
+     * que hay alrededor de la canción actual sin recargarla, así no se corta.
+     * Si el reproductor no cuadra con la cola, recarga la sesión entera.
      */
+    private fun reorderSession(state: PlaybackSession): Boolean {
+        val inSync = player.itemCount == queueState.list.size && player.currentIndex == queueState.index
+        if (inSync) {
+            val before = snapshot()
+            applyState(state)
+            if (runCatching { player.replaceAroundCurrent(state.songs, state.index) }.getOrDefault(false)) return true
+            applyState(before)
+        }
+        return loadSession(state, player.playing)
+    }
+
+    suspend fun toggleShuffle(enable: Boolean) {
+        if (enable) shuffleAllQueue() else restoreOriginalOrder()
+    }
+
     fun cycleLoopMode(): LoopMode {
         loopMode = when (loopMode) {
             LoopMode.OFF -> LoopMode.ALL
@@ -350,102 +273,78 @@ class QueueManager(private val player: PlayerOps) {
     }
 
     fun ensureLoopAll() {
-        if (loopMode != LoopMode.ALL) {
-            loopMode = LoopMode.ALL
-            player.setRepeatMode(loopMode)
-        }
+        loopMode = LoopMode.ALL
+        player.setRepeatMode(loopMode)
     }
 
     fun seekToIndex(index: Int) {
-        if (index < 0 || index >= queueState.list.size) return
+        if (index !in queueState.list.indices) return
+        val previous = queueState.index
         queueState.index = index
-        player.seekToIndex(index)
+        if (player.itemCount == 0) return
+        val ok = runCatching { player.seekToIndex(index) }.getOrDefault(false)
+        if (!ok) queueState.index = previous
     }
 
-    fun seekTo(positionMs: Long) {
-        player.seekTo(positionMs)
-    }
+    fun seekTo(positionMs: Long) = player.seekTo(positionMs)
 
-    /** Keeps [QueueState.index] synced from the player (service listener). */
     fun onMediaItemTransition(index: Int) {
-        if (index in queueState.list.indices && queueState.index != index) {
-            queueState.index = index
+        if (index in queueState.list.indices) queueState.index = index
+    }
+
+    fun onPlaybackEnded() = player.stopForEnd()
+
+    fun resetErrorRecovery() {
+        failedEntries.clear()
+        recoveryAttempts = 0
+    }
+
+    fun onPlaybackError(index: Int, continuePlaying: Boolean): Boolean {
+        ensureEntries()
+        if (index !in entryIds.indices) {
+            player.pause()
+            return false
         }
-    }
-
-    /** Queue finished in LoopMode.OFF: rewind + pause, consistent state. */
-    fun onPlaybackEnded() {
-        player.stopForEnd()
-    }
-
-    private fun resetQueueState() {
-        queueState.list.clear()
-        queueState.index = 0
-        queueState.label = ""
-        originalOrder = emptyList()
-        queueShuffled = false
-    }
-
-    private fun pruneOriginalOrder() {
-        originalOrder = originalOrder.filter { p -> queueState.list.any { it.playUri == p } }
-    }
-
-    /** Shuffle walk order: current position first, Fisher-Yates on the rest. */
-    private fun ensureShuffleOrder(n: Int): List<Int> {
-        if (shuffleOrderRevision == queueRevision && shuffleOrder.size == n) return shuffleOrder
-        regenerateShuffleOrder(n)
-        return shuffleOrder
-    }
-
-    private fun regenerateShuffleOrder(n: Int) {
-        shuffleOrderRevision = queueRevision
-        if (n <= 0) {
-            shuffleOrder = emptyList()
-            return
+        failedEntries.add(entryIds[index])
+        val size = entryIds.size
+        val maxAttempts = minOf(size, MAX_RECOVERY_ATTEMPTS)
+        while (recoveryAttempts < maxAttempts) {
+            // Con LoopMode.OFF la cola termina tras la última pista, así que
+            // solo se recorren las posiciones por delante de `index`; con
+            // repeat activo se da la vuelta completa. El filtro comprobaba
+            // `it < size` sobre un índice ya reducido, o sea que nunca
+            // descartaba nada.
+            val limit = if (loopMode == LoopMode.OFF) size - index else size
+            val target = (1 until limit).firstOrNull { entryIds[(index + it) % size] !in failedEntries }
+                ?.let { (index + it) % size }
+                ?: break
+            recoveryAttempts++
+            queueState.index = target
+            val recovered = try {
+                if (player.seekToIndex(target)) {
+                    player.prepareAfterError()
+                    if (continuePlaying) player.play() else player.pause()
+                    true
+                } else false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                false
+            }
+            if (recovered) return true
+            failedEntries.add(entryIds[target])
         }
-        val current = queueState.index.coerceIn(0, n - 1)
-        shuffleOrder = listOf(current) + (0 until n).filter { it != current }.shuffled(random)
+        queueState.index = player.currentIndex.takeIf { it in entryIds.indices } ?: index
+        player.pause()
+        return false
     }
 
     companion object {
+        const val MAX_RECOVERY_ATTEMPTS = 10
 
-        /**
-         * Pure skip math (testable): target = (index + direction) mod n,
-         * adding n when negative so prev at index 0 wraps to n-1.
-         */
         fun skipTargetFor(index: Int, n: Int, direction: Int): Int {
             if (n <= 0) return index
-            var target = (index + direction) % n
-            if (target < 0) target += n
-            return target
-        }
-
-        /**
-         * Pure shuffle logic (testable without a player): current first,
-         * rest randomized. Port of AudioPlayerService.shuffledOrderFor.
-         */
-        fun shuffledOrderFor(list: List<Song>, current: Song, rng: Random): List<Song> {
-            val rest = list.filter { it.playUri != current.playUri }.shuffled(rng)
-            return listOf(current) + rest
-        }
-
-        /**
-         * Pure restore logic: orders songs according to [orderUris] and
-         * appends the songs added after the shuffle. Returns
-         * (restored list, index of the current song).
-         */
-        fun restoredOrderFor(
-            list: List<Song>,
-            orderUris: List<String>,
-            currentUri: String?,
-        ): Pair<List<Song>, Int> {
-            val byUri = list.associateBy { it.playUri }
-            val restored = orderUris.mapNotNull { byUri[it] }.toMutableList()
-            for (song in list) {
-                if (restored.none { it.playUri == song.playUri }) restored.add(song)
-            }
-            val idx = restored.indexOfFirst { it.playUri == currentUri }.let { if (it < 0) 0 else it }
-            return Pair(restored, idx)
+            return ((index + direction) % n + n) % n
         }
     }
 }

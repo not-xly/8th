@@ -20,6 +20,22 @@ interface PlayerOps {
 
     fun clearItems()
 
+    /**
+     * Sustituye todos los elementos salvo el que suena, que queda en
+     * [currentAt] de [songs]: reordena sin volver a preparar la pista
+     * actual (cargar la cola entera de nuevo hacía una micro-pausa).
+     */
+    fun replaceAroundCurrent(songs: List<Song>, currentAt: Int): Boolean {
+        val current = currentIndex
+        if (current !in 0 until itemCount) return false
+        for (i in itemCount - 1 downTo current + 1) removeItemAt(i)
+        repeat(current) { removeItemAt(0) }
+        songs.forEachIndexed { i, song ->
+            if (i != currentAt && !addItem(song, i)) return false
+        }
+        return true
+    }
+
     /** Jumps to the item at [index] from its start; false when it failed. */
     fun seekToIndex(index: Int): Boolean
 
@@ -28,6 +44,8 @@ interface PlayerOps {
     fun play()
 
     fun pause()
+
+    fun prepareAfterError() {}
 
     /** End-of-queue handling: rewind and pause (keeps state consistent). */
     fun stopForEnd()

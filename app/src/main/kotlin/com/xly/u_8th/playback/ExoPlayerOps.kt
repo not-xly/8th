@@ -1,6 +1,5 @@
 package com.xly.u_8th.playback
 
-import android.content.Context
 import android.net.Uri
 import androidx.core.net.toUri
 import androidx.media3.common.C
@@ -17,11 +16,10 @@ import kotlinx.coroutines.launch
 /**
  * [PlayerOps] implementation over a media3 [Player]. Items are built WITHOUT
  * blocking on artwork IO: the current item's cover is resolved lazily and
- * re-published via [setMediaItemArtwork] (port of refreshCurrentMediaItem).
+ * re-published via [setMediaItemArtwork].
  */
 class ExoPlayerOps(
     private val player: Player,
-    @Suppress("unused") private val context: Context,
     private val artCache: ArtCache,
     private val scope: CoroutineScope,
 ) : PlayerOps {
@@ -55,6 +53,22 @@ class ExoPlayerOps(
         runCatching { player.moveMediaItem(from, to) }
     }
 
+    override fun replaceAroundCurrent(songs: List<Song>, currentAt: Int): Boolean {
+        return try {
+            val current = player.currentMediaItemIndex
+            val count = player.mediaItemCount
+            if (current !in 0 until count) return false
+            // En bloque: dos quitas y dos inserciones, la pista actual intacta.
+            player.removeMediaItems(current + 1, count)
+            player.removeMediaItems(0, current)
+            player.addMediaItems(0, songs.subList(0, currentAt).map { mediaItemFor(it) })
+            player.addMediaItems(currentAt + 1, songs.subList(currentAt + 1, songs.size).map { mediaItemFor(it) })
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override fun clearItems() {
         runCatching { player.clearMediaItems() }
     }
@@ -78,6 +92,10 @@ class ExoPlayerOps(
 
     override fun pause() {
         player.pause()
+    }
+
+    override fun prepareAfterError() {
+        player.prepare()
     }
 
     override fun stopForEnd() {

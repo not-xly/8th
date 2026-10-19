@@ -1,139 +1,117 @@
 package com.xly.u_8th.playback
 
-import android.os.SystemClock
 import androidx.media3.common.C
-import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import com.xly.u_8th.auto.AutoPlaybackState
 import com.xly.u_8th.auto.AutoQueueItem
 import com.xly.u_8th.auto.AutoPlaybackSnapshot
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
-/**
- * Publishes playback snapshots to the car via [AutoPlaybackState], with the
- * change-detection stable UI state for the main screen controller's _pushAutoSnapshot:
- * a 1s tick plus a cheap signature — only pushed when the state changed, the
- * position advanced (>=2s while playing), or a 10s playing heartbeat fired.
- * Before, the whole queue was serialized every 500ms even while paused.
- *
- * Native-to-native now: the queue always travels (no binder cost) and the
- * queue hash is only recomputed when queueRevision changes (instead of
- * walking every uri each second).
- */
 class AutoStateSync(
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val player: Player,
     private val queueManager: QueueManager,
 ) {
-
-    private var lastKey = ""
-    private var lastPosSec = -1
-    private var lastPushElapsed = 0L
-    private var lastQueueRevision = -1
-    private var cachedQueueHash = 0x811c9dc5L
-
+    private val cache = AutoSnapshotCache()
+    private var lastSnapshot: AutoPlaybackSnapshot? = null
+    private var ticker: Job? = null
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            push()
+            updateTicker()
         }
 
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            push()
-        }
-
-        override fun onPlaybackStateChanged(playbackState: Int) {
-            push()
-        }
-
-        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-            push()
-        }
-
-        override fun onRepeatModeChanged(repeatMode: Int) {
-            push()
+        override fun onEvents(player: Player, events: Player.Events) {
+            // `push()` ya compara con el snapshot anterior y descarta lo
+            // que no cambió: `forcePosition = true` lo convertía en una
+            // publicación en CADA evento del player, con reconstrucción
+            // completa del ItemList en el host del coche. Excepción: un
+            // salto de posición (seek), que con el player en pausa no se
+            // publicaba nunca y el coche mostraba la posición vieja.
+            push(forcePosition = events.contains(Player.EVENT_POSITION_DISCONTINUITY))
         }
     }
 
     init {
         player.addListener(listener)
-        scope.launch {
-            while (isActive) {
+        updateTicker()
+        push()
+    }
+
+    private fun updateTicker() {
+        ticker?.cancel()
+        ticker = if (player.isPlaying) scope.launch {
+            while (isActive && player.isPlaying) {
                 delay(1_000)
                 push()
             }
-        }
+        } else null
     }
 
     fun release() {
+        ticker?.cancel()
         player.removeListener(listener)
     }
 
-    /** Computes the snapshot and updates [AutoPlaybackState] only on change. */
-    fun push() {
-        try {
-            val song = queueManager.currentSong ?: return
-            val list = queueManager.queueState.list
-            val playing = player.isPlaying
-            val loopWire = queueManager.loopMode.wire
-            val queueIndex = queueManager.queueState.index
+    /**
+     * Publica el snapshot al host del coche solo cuando algo cambió de
+   * verdad. Dos guardas:
+     * - `changed`: cualquier campo distinto de la posición (pista, cola,
+     *   orden, repeat…).
+     * - posición: solo se propaga cada [POSITION_EAGER_MS] mientras suena;
+     *   `PlaybackScreen` la extrapola sola con su ticker de 1 s, así que
+     *   publicar cada evento del player solo generaba trabajo inútil.
+     */
+    fun push(forcePosition: Boolean = false) {
+        val snapshot = cache.snapshot(
+            queueManager,
+            player.currentPosition,
+            if (player.duration == C.TIME_UNSET) 0L else player.duration,
+            player.isPlaying,
+        )
+        val previous = lastSnapshot
+        if (previous != null && previous == snapshot) return
+        val changed = previous == null || previous.copy(positionMs = snapshot.positionMs) != snapshot
+        val positionChanged = previous == null ||
+            abs(previous.positionMs - snapshot.positionMs) >= POSITION_EAGER_MS
+        if (!changed && !forcePosition && !(snapshot.playing && positionChanged)) return
+        lastSnapshot = snapshot
+        AutoPlaybackState.update(snapshot)
+    }
 
-            // Cheap signature without serializing titles: current uri + flags
-            // + length + FNV-1a over uri LENGTHS (no string traversal);
-            // recomputed only when the queue mutates (queueRevision).
-            if (lastQueueRevision != queueManager.queueRevision) {
-                var hash = 0x811c9dc5L
-                for (s in list) {
-                    hash = hash xor s.playUri.length.toLong()
-                    hash = (hash * 0x01000193L) and 0xFFFFFFFFL
-                }
-                cachedQueueHash = hash
-                lastQueueRevision = queueManager.queueRevision
+    private companion object {
+        const val POSITION_EAGER_MS = 2_000L
+    }
+}
+
+class AutoSnapshotCache {
+    private var revision = -1
+    private var queue = emptyList<AutoQueueItem>()
+
+    fun snapshot(manager: QueueManager, positionMs: Long, durationMs: Long, playing: Boolean): AutoPlaybackSnapshot {
+        if (revision != manager.queueRevision) {
+            queue = manager.queueState.list.map {
+                AutoQueueItem(it.playUri, it.displayTitle, it.artist, it.album, it.durationMs ?: 0L)
             }
-            val key = "${song.playUri}|$playing|${queueManager.queueShuffled}|$loopWire" +
-                "|$queueIndex|${list.size}|$cachedQueueHash"
-
-            val posSec = (player.currentPosition / 1000).toInt()
-            val now = SystemClock.elapsedRealtime()
-            val posChanged = (posSec - lastPosSec).let { if (it < 0) -it else it } >= 2
-            val keyChanged = key != lastKey
-            // Heartbeat ONLY while playing: on pause the car already has the
-            // state and a 10s push would wake the CPU forever.
-            val heartbeat = playing && now - lastPushElapsed >= 10_000
-            if (!keyChanged && !(playing && posChanged) && !heartbeat) {
-                return
-            }
-            lastKey = key
-            lastPosSec = posSec
-            lastPushElapsed = now
-
-            AutoPlaybackState.update(
-                AutoPlaybackSnapshot(
-                    uri = song.playUri,
-                    title = song.displayTitle,
-                    artist = song.artist ?: "",
-                    album = song.album ?: "",
-                    positionMs = player.currentPosition.coerceAtLeast(0L),
-                    durationMs = if (player.duration == C.TIME_UNSET) 0L else player.duration,
-                    playing = playing,
-                    shuffled = queueManager.queueShuffled,
-                    loopMode = loopWire,
-                    queue = list.map {
-                        AutoQueueItem(
-                            uri = it.playUri,
-                            title = it.displayTitle,
-                            artist = it.artist,
-                            album = it.album,
-                            durationMs = it.durationMs ?: 0L,
-                        )
-                    },
-                    queueIndex = queueIndex,
-                ),
-            )
-        } catch (_: Exception) {
-            // Snapshot failures must never take the playback service down.
+            revision = manager.queueRevision
         }
+        val song = manager.currentSong
+        return AutoPlaybackSnapshot(
+            uri = song?.playUri.orEmpty(),
+            title = song?.displayTitle.orEmpty(),
+            artist = song?.artist.orEmpty(),
+            album = song?.album.orEmpty(),
+            positionMs = if (song == null) 0L else positionMs.coerceAtLeast(0L),
+            durationMs = if (song == null) 0L else durationMs.coerceAtLeast(0L),
+            playing = song != null && playing,
+            shuffled = manager.queueShuffled,
+            loopMode = manager.loopMode.wire,
+            queue = queue,
+            queueIndex = manager.queueState.index,
+        )
     }
 }

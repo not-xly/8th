@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Bundle
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import com.xly.u_8th.domain.Song
 import kotlinx.coroutines.CompletableDeferred
@@ -14,7 +15,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.Executor
@@ -24,7 +24,7 @@ import java.util.concurrent.Executor
  * [PlaybackService]. All UI/car commands go through here; the methods are
  * suspend so callers never block the main thread on the session binder.
  */
-class PlayerConnection(private val context: Context, private val scope: CoroutineScope) {
+class PlayerConnection private constructor(private val context: Context, private val scope: CoroutineScope) {
 
     private val mutex = Mutex()
 
@@ -130,22 +130,26 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         if (songs.isEmpty()) return
         PlaybackCatalog.putAll(songs)
         val safeIndex = initialIndex.coerceIn(0, songs.size - 1)
-        val controller = awaitController()
-        if (songs.size <= MAX_PARCELABLE_SONGS) {
-            // Payload small enough for the binder transaction: full songs travel.
-            val args = Bundle().apply {
-                putParcelableArrayList(PlaybackService.ARG_SONGS, ArrayList(songs))
-                putCommonArgs(safeIndex, label, autoPlay, shuffled, resumeIfSameSong)
-            }
-            sendOn(controller, PlaybackService.ACTION_PLAY_SONGS, args)
-        } else {
-            // Binder safety (~1MB TransactionTooLarge limit): URIs only; the
-            // service rebuilds the songs from the PlaybackCatalog.
-            val args = Bundle().apply {
-                putStringArrayList(PlaybackService.ARG_URIS, ArrayList(songs.map { it.playUri }))
-                putCommonArgs(safeIndex, label, autoPlay, shuffled, resumeIfSameSong)
-            }
-            sendOn(controller, PlaybackService.ACTION_PLAY_URIS, args)
+        // Solo un token: la cola se queda en el PlaybackCatalog (mismo
+        // proceso). Enviar los Song o las URIs por el binder podía superar
+        // su límite (~1 MB) con colas grandes y el álbum no sonaba.
+        val token = PlaybackCatalog.stageQueue(songs)
+        val args = Bundle().apply {
+            putString(PlaybackService.ARG_QUEUE_TOKEN, token)
+            putCommonArgs(safeIndex, label, autoPlay, shuffled, resumeIfSameSong)
+        }
+        val ok = try {
+            awaitResult(awaitController(), PlaybackService.ACTION_PLAY_URIS, args)
+        } catch (ce: CancellationException) {
+            PlaybackCatalog.takeStaged(token)
+            throw ce
+        } catch (_: Exception) {
+            false
+        }
+        if (!ok) {
+            // Antes se tragaba: ahora la UI avisa de que no sonó nada.
+            PlaybackCatalog.takeStaged(token)
+            PlayerBus.completeResult(songs.size)
         }
     }
 
@@ -165,12 +169,12 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
 
     suspend fun addNext(song: Song) {
         PlaybackCatalog.put(song)
-        sendCustom(PlaybackService.ACTION_ADD_NEXT) { putParcelableCompat(PlaybackService.ARG_SONG, song) }
+        sendCustom(PlaybackService.ACTION_ADD_NEXT) { putString(PlaybackService.ARG_URI, song.playUri) }
     }
 
     suspend fun addEnd(song: Song) {
         PlaybackCatalog.put(song)
-        sendCustom(PlaybackService.ACTION_ADD_END) { putParcelableCompat(PlaybackService.ARG_SONG, song) }
+        sendCustom(PlaybackService.ACTION_ADD_END) { putString(PlaybackService.ARG_URI, song.playUri) }
     }
 
     suspend fun removeAt(index: Int) =
@@ -207,31 +211,47 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         Unit
     }
 
+    /** Envía [action] y espera la respuesta del servicio; true si tuvo éxito. */
+    private suspend fun awaitResult(controller: MediaController, action: String, args: Bundle): Boolean =
+        withContext(Dispatchers.Main.immediate) {
+            val future = controller.sendCustomCommand(SessionCommand(action, args), args)
+            val result = CompletableDeferred<Boolean>()
+            future.addListener(
+                {
+                    result.complete(
+                        runCatching { future.get().resultCode == SessionResult.RESULT_SUCCESS }.getOrDefault(false)
+                    )
+                },
+                Executor { it.run() },
+            )
+            result.await()
+        }
+
     private suspend fun sendCustom(action: String, build: Bundle.() -> Unit) {
         val args = Bundle().apply(build)
         sendOn(awaitController(), action, args)
     }
 
-    @Suppress("DEPRECATION")
-    private fun Bundle.putParcelableCompat(key: String, song: Song) {
-        putParcelable(key, song)
-    }    companion object {
-        /** Above this, payload switches to URIs (binder transaction limit). */
-        private const val MAX_PARCELABLE_SONGS = 400
-
+    companion object {
         // Holds the application context only — never an Activity — so the
         // static reference cannot leak a UI component.
         @Suppress("StaticFieldLeak")
         @Volatile
         private var instance: PlayerConnection? = null
 
-        /** App-scoped singleton. */
+        /**
+         * App-scoped singleton. [scope] is nullable on purpose: a default
+         * `CoroutineScope(...)` parameter allocated a throwaway scope on
+         * every call that did not pass one.
+         */
         fun get(
             context: Context,
-            scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            scope: CoroutineScope? = null,
         ): PlayerConnection = instance ?: synchronized(this) {
-            instance ?: PlayerConnection(context.applicationContext, scope)
-                .also { instance = it }
+            instance ?: PlayerConnection(
+                context.applicationContext,
+                scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            ).also { instance = it }
         }
     }
 }
