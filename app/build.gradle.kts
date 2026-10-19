@@ -31,6 +31,23 @@ android {
         compose = true
     }
 
+    // Firma de release: las credenciales van en ~/.gradle/gradle.properties
+    // o en variables de entorno con el mismo nombre (CI), nunca en el repo.
+    // Sin keystore configurada, release sale sin firmar y debug sigue igual.
+    fun signingSetting(name: String): String? =
+        (project.findProperty(name) as String?) ?: System.getenv(name)
+
+    signingConfigs {
+        create("release") {
+            signingSetting("EIGHTH_KEYSTORE_PATH")?.let { path ->
+                storeFile = file(path)
+                storePassword = signingSetting("EIGHTH_STORE_PASSWORD")
+                keyAlias = signingSetting("EIGHTH_KEY_ALIAS")
+                keyPassword = signingSetting("EIGHTH_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -39,10 +56,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Sin signingConfig: release se queda sin firmar hasta
-            // que se configure una keystore de publicación (firmar
-            // con la debug key publica la clave de depuración en
-            // la tienda).
+            // Firmar con la debug key publicaría la clave de depuración.
+            if (signingSetting("EIGHTH_KEYSTORE_PATH") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }
