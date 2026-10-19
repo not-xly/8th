@@ -19,7 +19,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.xly.u_8th"
+        applicationId = "com.xly.u_8th.v2"
         minSdk = 24
         targetSdk = 36
         versionCode = 1
@@ -39,7 +39,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            // Sin signingConfig: release se queda sin firmar hasta
+            // que se configure una keystore de publicación (firmar
+            // con la debug key publica la clave de depuración en
+            // la tienda).
         }
     }
 }

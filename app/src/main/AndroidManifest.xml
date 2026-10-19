@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
@@ -7,13 +8,21 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="androidx.car.app.MEDIA_TEMPLATES" />
+
+    <!-- La app es usable en móvil Y en coche: la feature se declara como
+         opcional para no filtrarla fuera de los head-units. -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
 
     <application
         android:name=".EighthApplication"
         android:allowBackup="true"
+        android:extractNativeLibs="true"
         android:appCategory="audio"
+        tools:targetApi="o"
         android:icon="@mipmap/ic_launcher"
         android:label="8th"
         android:theme="@style/Theme.Eighth">
@@ -40,18 +49,25 @@
             </intent-filter>
         </activity>
 
+        <!-- exported es obligatorio para MediaSessionService (los
+             controladores de otros procesos deben poder enlazar). El
+             `permission` no procede: media3 ya valida cada comando. -->
         <service
             android:name=".playback.PlaybackService"
             android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
+            android:foregroundServiceType="mediaPlayback"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
 
+        <!-- exported lo exige la librería car-app para que el host del
+             coche pueda enlazar; solo acciones de reproducción. -->
         <service
             android:name=".auto.EighthCarAppService"
-            android:exported="true">
+            android:exported="true"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
             </intent-filter>

@@ -11,6 +11,7 @@ import com.xly.u_8th.playback.PlayerConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class EighthApplication : Application() {
 
@@ -20,14 +21,26 @@ class EighthApplication : Application() {
     val artCache: ArtCache by lazy { ArtCache(this) }
     val libraryRepository: LibraryRepository by lazy { LibraryRepository(this, prefs) }
     val lyricsRepository: LyricsRepository by lazy {
-        LyricsRepository(this, SharedPreferencesLrcPrefs(this))
+        LyricsRepository(this, SharedPreferencesLrcPrefs(prefs))
+    }
+    val playbackSessionStore by lazy { com.xly.u_8th.playback.PlaybackSessionStore(this) }
+    val playbackSessionSaver by lazy {
+        com.xly.u_8th.playback.SessionSaveScheduler(
+            appScope,
+            snapshotContext = Dispatchers.Main.immediate,
+            save = playbackSessionStore::save,
+        )
     }
     val playerConnection: PlayerConnection by lazy {
-        PlayerConnection(applicationContext, appScope)
+        PlayerConnection.get(applicationContext, appScope)
     }
 
     override fun onCreate() {
         super.onCreate()
+        // Carga el XML de preferencias en IO desde el arranque: la primera
+        // lectura de SharedPreferences bloquea hasta tenerlo en memoria, y
+        // si la hacía la UI ocurría en el hilo principal.
+        appScope.launch(Dispatchers.IO) { prefs.getTreeUri() }
         // Car "Aleatorio total" on a cold start: the service shuffles whatever
         // the persisted library source provides.
         PlaybackGraph.shuffleAllLibrary = {
