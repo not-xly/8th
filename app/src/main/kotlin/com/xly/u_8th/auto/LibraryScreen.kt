@@ -16,13 +16,17 @@ class LibraryScreen(carContext: CarContext) : Screen(carContext) {
         // Primer arranque en el coche: loading inmediato y scan en
         // background. onGetTemplate debe volver rápido; escanear MediaStore
         // aquí (como antes) bloqueaba el main thread del servicio = ANR.
-        if (!LibraryProvider.refreshedOnce) {
+        if (LibraryProvider.needsRescan()) {
             LibraryProvider.refreshAsync(carContext) { invalidate() }
-            return ListTemplate.Builder()
-                .setLoading(true)
-                .setTitle("8th")
-                .setHeaderAction(Action.APP_ICON)
-                .build()
+            // Loading solo mientras no se ha escaneado nunca: si el fallo fue
+            // por permiso ausente hay que mostrar el aviso accionable, no un
+            // spinner que nunca termina.
+            if (!LibraryProvider.refreshedOnce) {
+                return ListTemplate.Builder()
+                    .setLoading(true)
+                    .setHeader(appHeader("8th", Action.APP_ICON))
+                    .build()
+            }
         }
 
         val builder = ItemList.Builder()
@@ -88,7 +92,7 @@ class LibraryScreen(carContext: CarContext) : Screen(carContext) {
                     CarIcon.Builder(IconCompat.createWithResource(carContext, android.R.drawable.ic_menu_sort_by_size)).build()
                 )
                 .setOnClickListener {
-                    // Sin lista gigante por el canal: Dart baraja su propia
+                    // Sin lista gigante por la sesión: el servicio baraja la
                     // biblioteca (evita TransactionTooLarge con 5000 temas).
                     AutoBridge.sendControl(carContext, "shuffleAll")
                 }
@@ -97,8 +101,7 @@ class LibraryScreen(carContext: CarContext) : Screen(carContext) {
 
         return ListTemplate.Builder()
             .setSingleList(builder.build())
-            .setTitle("8th")
-            .setHeaderAction(Action.APP_ICON)
+            .setHeader(appHeader("8th", Action.APP_ICON))
             .build()
     }
 }

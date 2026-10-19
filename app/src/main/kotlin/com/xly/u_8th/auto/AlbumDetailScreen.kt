@@ -2,21 +2,25 @@ package com.xly.u_8th.auto
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.model.Action
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
+import com.xly.u_8th.util.fmtMs
 
+/**
+ * @param albumKey clave de [LibraryProvider.Album]: "id:<albumId>" o
+ * "unk:<título>" para los álbumes sin id en MediaStore. Con solo el id,
+ * todos los "Desconocido" (id = 0) compartían la misma pantalla.
+ */
 class AlbumDetailScreen(
     carContext: CarContext,
-    private val albumId: Long,
+    private val albumKey: String,
     private val offset: Int = 0
 ) : Screen(carContext) {
 
     override fun onGetTemplate(): Template {
-        val tracks = LibraryProvider.tracksForAlbum(albumId)
-        val max = AutoBridge.MAX_ITEMS
+        val tracks = LibraryProvider.tracksForAlbum(albumKey)
+        val max = PAGE_ROWS
         val from = offset.coerceIn(0, tracks.size)
         val to = (from + max).coerceAtMost(tracks.size)
         val visible = tracks.subList(from, to)
@@ -29,7 +33,7 @@ class AlbumDetailScreen(
                 Row.Builder()
                     .setTitle(track.title)
                     .addText(track.artist ?: "Desconocido")
-                    .addText(formatDuration(track.durationMs))
+                    .addText(if (track.durationMs > 0) fmtMs(track.durationMs) else "")
                     .setOnClickListener {
                         AutoBridge.requestPlayQueue(carContext, queueSource, tapIndex)
                     }
@@ -43,7 +47,7 @@ class AlbumDetailScreen(
                     .setTitle("Siguientes ${(tracks.size - to).coerceAtMost(max)} canciones")
                     .addText("Más pistas del álbum")
                     .setOnClickListener {
-                        screenManager.push(AlbumDetailScreen(carContext, albumId, to))
+                        screenManager.push(AlbumDetailScreen(carContext, albumKey, to))
                     }
                     .build()
             )
@@ -53,18 +57,11 @@ class AlbumDetailScreen(
             builder.setNoItemsMessage("Álbum vacío")
         }
 
-        return ListTemplate.Builder()
-            .setSingleList(builder.build())
-            .setTitle(tracks.firstOrNull()?.album ?: "Álbum")
-            .setHeaderAction(Action.BACK)
-            .build()
+        return listWithHeader(builder.build(), tracks.firstOrNull()?.album ?: "Álbum").build()
     }
 
-    private fun formatDuration(ms: Long): String {
-        if (ms <= 0) return ""
-        val totalSec = ms / 1000
-        val m = totalSec / 60
-        val s = totalSec % 60
-        return "%d:%02d".format(m, s)
+    private companion object {
+        /** Una fila menos que el límite del host: la de paginación ocupa hueco. */
+        const val PAGE_ROWS = AutoBridge.MAX_ITEMS - 1
     }
 }

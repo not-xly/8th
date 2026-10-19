@@ -19,7 +19,7 @@ data class AutoPlaybackSnapshot(
     val shuffled: Boolean = false,
     val loopMode: Int = 0,
     val queue: List<AutoQueueItem> = emptyList(),
-    val queueIndex: Int = 0
+    val queueIndex: Int = 0,
 )
 
 object AutoPlaybackState {
@@ -27,21 +27,21 @@ object AutoPlaybackState {
     @Volatile
     private var current: AutoPlaybackSnapshot = AutoPlaybackSnapshot()
 
-    @Volatile
-    private var sink: ((AutoPlaybackSnapshot) -> Unit)? = null
+    private val sinks = java.util.concurrent.CopyOnWriteArraySet<(AutoPlaybackSnapshot) -> Unit>()
 
     fun current(): AutoPlaybackSnapshot = current
 
     fun update(snapshot: AutoPlaybackSnapshot) {
         current = snapshot
-        sink?.invoke(snapshot)
+        sinks.forEach { sink -> runCatching { sink(snapshot) } }
     }
 
     fun attach(sink: (AutoPlaybackSnapshot) -> Unit) {
-        this.sink = sink
+        sinks.add(sink)
+        sink(current)
     }
 
-    fun detach() {
-        this.sink = null
+    fun detach(sink: (AutoPlaybackSnapshot) -> Unit) {
+        sinks.remove(sink)
     }
 }

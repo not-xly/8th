@@ -2,11 +2,10 @@ package com.xly.u_8th.auto
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.model.Action
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
+import java.util.Locale
 
 class QueueScreen(carContext: CarContext) : Screen(carContext) {
 
@@ -18,11 +17,7 @@ class QueueScreen(carContext: CarContext) : Screen(carContext) {
             val empty = ItemList.Builder()
                 .setNoItemsMessage("Cola vacía")
                 .build()
-            return ListTemplate.Builder()
-                .setSingleList(empty)
-                .setTitle("Cola")
-                .setHeaderAction(Action.BACK)
-                .build()
+            return listWithHeader(empty, "Cola").build()
         }
 
         // Ventana alrededor del tema actual: la cola puede tener 1000+
@@ -58,11 +53,7 @@ class QueueScreen(carContext: CarContext) : Screen(carContext) {
         } else {
             "Cola (${queue.size})"
         }
-        return ListTemplate.Builder()
-            .setSingleList(builder.build())
-            .setTitle(title)
-            .setHeaderAction(Action.BACK)
-            .build()
+        return listWithHeader(builder.build(), title).build()
     }
 
     private fun formatDuration(ms: Long): String {
@@ -70,6 +61,6 @@ class QueueScreen(carContext: CarContext) : Screen(carContext) {
         val totalSec = ms / 1000
         val m = totalSec / 60
         val s = totalSec % 60
-        return "%d:%02d".format(m, s)
+        return "%d:%02d".format(Locale.ROOT, m, s)
     }
 }

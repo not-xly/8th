@@ -2,9 +2,7 @@ package com.xly.u_8th.auto
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.model.Action
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 
@@ -12,7 +10,7 @@ class AllSongsScreen(carContext: CarContext, private val offset: Int = 0) : Scre
 
     override fun onGetTemplate(): Template {
         val tracks = LibraryProvider.tracks()
-        val max = AutoBridge.MAX_ITEMS
+        val max = PAGE_ROWS
         val from = offset.coerceIn(0, tracks.size)
         val to = (from + max).coerceAtMost(tracks.size)
         val visible = tracks.subList(from, to)
@@ -39,10 +37,11 @@ class AllSongsScreen(carContext: CarContext, private val offset: Int = 0) : Scre
         // (el título "(100/500)" avisaba del recorte pero no ofrecía remedio).
         if (to < tracks.size) {
             val remaining = tracks.size - to
+            val totalPages = (tracks.size + max - 1) / max
             builder.addItem(
                 Row.Builder()
                     .setTitle("Siguientes ${remaining.coerceAtMost(max)} canciones")
-                    .addText("Página ${to / max + 1} de ${(tracks.size + max - 1) / max}")
+                    .addText("Página ${to / max + 1} de $totalPages")
                     .setOnClickListener {
                         screenManager.push(AllSongsScreen(carContext, to))
                     }
@@ -59,10 +58,17 @@ class AllSongsScreen(carContext: CarContext, private val offset: Int = 0) : Scre
         } else {
             "Todas las canciones (${tracks.size})"
         }
-        return ListTemplate.Builder()
-            .setSingleList(builder.build())
-            .setTitle(title)
-            .setHeaderAction(Action.BACK)
-            .build()
+        return listWithHeader(builder.build(), title).build()
+    }
+
+    private companion object {
+        /**
+         * Un pista menos que el límite del host: la fila de paginación
+         * también ocupa una. `ListTemplate` **trunca** en silencio a 100
+         * ítems (no lanza), así que sin reservar este hueco la fila de
+         * "Siguientes" sería siempre la última eliminada y las canciones
+         * 101+ quedarían inalcanzables desde el coche.
+         */
+        const val PAGE_ROWS = AutoBridge.MAX_ITEMS - 1
     }
 }

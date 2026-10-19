@@ -15,6 +15,7 @@ import androidx.car.app.model.Template
 import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import java.util.Locale
 
 class PlaybackScreen(carContext: CarContext) : Screen(carContext) {
 
@@ -22,7 +23,7 @@ class PlaybackScreen(carContext: CarContext) : Screen(carContext) {
 
     // Último snapshot + instante de recepción: la posición mostrada avanza
     // en local (positionMs + tiempo transcurrido si playing) sin necesidad
-    // de que Dart reenvíe nada.
+    // de que el servicio reenvíe nada.
     private var snapshot = AutoPlaybackState.current()
     private var snapshotAt = SystemClock.elapsedRealtime()
 
@@ -39,15 +40,17 @@ class PlaybackScreen(carContext: CarContext) : Screen(carContext) {
         }
     }
 
-    // Push real: Dart envía snapshot -> invalidar. Antes este sink existía
-    // pero nadie lo conectaba (attach/detach eran código muerto) y la
-    // pantalla vivía de polling ciego.
+    // Push real: el servicio publica el snapshot vía AutoStateSync ->
+    // AutoPlaybackState y esta pantalla invalida al recibirlo. El ticker de
+    // 1s solo cubre el avance de la posición mientras suena.
     private val stateListener: (AutoPlaybackSnapshot) -> Unit = { s ->
         snapshot = s
         snapshotAt = SystemClock.elapsedRealtime()
         mainHandler.post {
+            mainHandler.removeCallbacks(tickRunnable)
             if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
                 invalidate()
+                if (snapshot.playing) mainHandler.postDelayed(tickRunnable, 1000L)
             }
         }
     }
@@ -65,12 +68,12 @@ class PlaybackScreen(carContext: CarContext) : Screen(carContext) {
             }
 
             override fun onStop(owner: LifecycleOwner) {
-                AutoPlaybackState.detach()
+                AutoPlaybackState.detach(stateListener)
                 mainHandler.removeCallbacks(tickRunnable)
             }
 
             override fun onDestroy(owner: LifecycleOwner) {
-                AutoPlaybackState.detach()
+                AutoPlaybackState.detach(stateListener)
                 mainHandler.removeCallbacks(tickRunnable)
             }
         })
@@ -100,11 +103,7 @@ class PlaybackScreen(carContext: CarContext) : Screen(carContext) {
             val empty = ItemList.Builder()
                 .setNoItemsMessage("No hay canción activa. Selecciona una canción desde la biblioteca.")
                 .build()
-            return ListTemplate.Builder()
-                .setSingleList(empty)
-                .setTitle("Reproduciendo")
-                .setHeaderAction(Action.BACK)
-                .build()
+            return listWithHeader(empty, "Reproduciendo").build()
         }
 
         val playPauseIconRes =
@@ -219,6 +218,13 @@ class PlaybackScreen(carContext: CarContext) : Screen(carContext) {
         val h = totalSec / 3600
         val m = (totalSec % 3600) / 60
         val s = totalSec % 60
-        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+        // Locale.ROOT: en un head-unit con numeración no latina (ar-EG,
+        // hi-IN con dígitos devanagari) un %d por defecto produce glifos
+        // que el HMI puede no renderizar.
+        return if (h > 0) {
+            String.format(Locale.ROOT, "%d:%02d:%02d", h, m, s)
+        } else {
+            String.format(Locale.ROOT, "%d:%02d", m, s)
+        }
     }
 }

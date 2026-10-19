@@ -1,13 +1,10 @@
 package com.xly.u_8th.auto
 
 import android.content.Context
+import com.xly.u_8th.EighthApplication
 import com.xly.u_8th.domain.Song
 import com.xly.u_8th.playback.PlaybackCatalog
 import com.xly.u_8th.playback.PlayerBus
-import com.xly.u_8th.playback.PlayerConnection
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 
 /**
  * Car screens -> playback routing. Native-to-native now: instead of an
@@ -17,20 +14,24 @@ import kotlinx.coroutines.SupervisorJob
  */
 object AutoBridge {
 
-    // Límite del host Car App Library para ItemList (~100 ítems): más
-    // lanza IllegalArgumentException y deja pantalla negra.
+    /**
+     * Límite del host Car App para `ItemList`: `ListTemplate` **trunca en
+     * silencio** a 100 ítems (no lanza excepción). Las pantallas paginadas
+     * reservan un hueco para su fila de "siguiente página" (`MAX_ITEMS - 1`).
+     */
     const val MAX_ITEMS = 100
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
     fun requestPlayQueue(context: Context, tracks: List<Track>, startIndex: Int) {
-        // Trunca al límite del host: la pantalla ya solo muestra MAX_ITEMS,
-        // así que el índice siempre cae dentro de lo enviado.
+        // La pantalla solo muestra MAX_ITEMS, así que el índice tapped cae
+        // dentro de lo enviado; el corte es solo una red de seguridad para
+        // el binder (TransactionTooLarge con bibliotecas grandes).
         val limited = tracks.take(MAX_ITEMS)
         if (limited.isEmpty()) return
         val safeIndex = startIndex.coerceIn(0, limited.size - 1)
+        // El catálogo conserva la canción completa (portada, filePath) si el
+        // móvil ya la registró; si no, se reconstruye desde la pista.
         val songs = limited.map { t ->
-            Song(
+            PlaybackCatalog.get(t.uri) ?: Song(
                 path = t.uri,
                 contentUri = t.uri,
                 title = t.title,
@@ -40,20 +41,23 @@ object AutoBridge {
             )
         }
         PlaybackCatalog.putAll(songs)
-        val connection = PlayerConnection.get(context)
+        // Vía la Application: `PlayerConnection.get` es singleton de primer
+        // escritor, y desde el coche se resolvería con un scope anónimo
+        // descartable en lugar del scope de la app.
+        val connection = EighthApplication.get(context).playerConnection
         connection.launch {
             playQueue(
                 songs,
                 initialIndex = safeIndex,
-                label = songs.getOrNull(safeIndex)?.album ?: "Auto",
+                // safeIndex ya está acotado a `limited`: indexarlo es seguro.
+                label = songs[safeIndex].album ?: "Auto",
                 autoPlay = true,
             )
         }
     }
 
     fun sendControl(context: Context, action: String) {
-        val connection = PlayerConnection.get(context)
-        connection.launch {
+        EighthApplication.get(context).playerConnection.launch {
             when (action) {
                 "play" -> play()
                 "pause" -> pause()
@@ -71,6 +75,6 @@ object AutoBridge {
 
     fun sendQueueAction(context: Context, command: String, index: Int = -1) {
         if (command != "playIndex" || index < 0) return
-        PlayerConnection.get(context).launch { seekToIndex(index) }
+        EighthApplication.get(context).playerConnection.launch { seekToIndex(index) }
     }
 }
