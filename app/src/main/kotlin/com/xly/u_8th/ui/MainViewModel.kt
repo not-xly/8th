@@ -99,7 +99,7 @@ data class MainUiState(
     val reordering: Boolean = false,
     val searching: Boolean = false,
     val searchQuery: String = "",
-    val searchResults: List<Pair<String, Song>> = emptyList(),
+    val searchResults: SearchResults = SearchResults(),
     val lyricsSyncing: Boolean = false,
     val lyricsSyncedCount: Int = 0,
     val lyricsTotalToSync: Int = 0,
@@ -686,12 +686,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startSearch() {
-        updateState { it.copy(searching = true, searchQuery = "", searchResults = emptyList()) }
+        updateState { it.copy(searching = true, searchQuery = "", searchResults = SearchResults()) }
     }
 
     fun closeSearch() {
         searchDebounceJob?.cancel()
-        updateState { it.copy(searching = false, searchQuery = "", searchResults = emptyList()) }
+        updateState { it.copy(searching = false, searchQuery = "", searchResults = SearchResults()) }
     }
 
     fun updateSearchQuery(q: String) {
@@ -701,8 +701,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             delay(250)
             if (!_state.value.searching) return@launch
             val grouped = _state.value.grouped
-            val results = withContext(Dispatchers.Default) { librarySearch.search(q, grouped) }
-            updateState { it.copy(searchResults = results) }
+            val (songs, artists) = withContext(Dispatchers.Default) {
+                librarySearch.search(q, grouped) to librarySearch.searchArtists(q)
+            }
+            // Primero artistas y canciones; las letras (lectura de disco la
+            // primera vez) llegan después sin retrasar el resto.
+            updateState { it.copy(searchResults = SearchResults(artists = artists, songs = songs)) }
+            val entries = withContext(Dispatchers.Default) { librarySearch.entries() }
+            val albumOf = entries.associate { (albumKey, song) -> song.path to albumKey }
+            val lyricHits = lyricsRepository.searchLyrics(q, entries.map { it.second })
+            if (lyricHits.isEmpty()) return@launch
+            val lyrics = lyricHits.mapNotNull { (song, line) ->
+                albumOf[song.path]?.let { albumKey ->
+                    val withArt = grouped[albumKey]?.firstOrNull { it.path == song.path } ?: song
+                    LyricHit(albumKey, withArt, line)
+                }
+            }
+            updateState { it.copy(searchResults = it.searchResults.copy(lyrics = lyrics)) }
         }
     }
 

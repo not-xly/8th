@@ -17,9 +17,27 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material3.Icon
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import com.xly.u_8th.ui.ArtistHit
+import com.xly.u_8th.ui.LibrarySearch
+import com.xly.u_8th.ui.LyricHit
+import com.xly.u_8th.ui.SearchResults
+import com.xly.u_8th.ui.components.TintedIconBadge
+import com.xly.u_8th.ui.components.glassCard
+import com.xly.u_8th.ui.components.pressClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -54,6 +72,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -95,7 +116,12 @@ import com.xly.u_8th.ui.nav.NavController
 import com.xly.u_8th.ui.theme.EighthTheme
 import com.xly.u_8th.ui.theme.animatedAura
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
+
+/** Espera máxima a que el teclado se oculte antes de abrir el sheet de artista. */
+private const val IME_HIDE_TIMEOUT_MS = 350L
 
 /**
  * Pantalla principal: header,
@@ -151,6 +177,22 @@ fun MainScreen(nav: NavController) {
     // ---- Overlays ----
     var albumSheet by remember { mutableStateOf<Pair<String, List<Song>>?>(null) }
     var artistSheet by remember { mutableStateOf<String?>(null) }
+    // Artista tocado en la búsqueda con el teclado abierto: el sheet espera
+    // a que el IME termine de bajar (si suben a la vez, la animación se
+    // descompone). Tope de espera para no quedarse colgado.
+    var pendingArtist by remember { mutableStateOf<String?>(null) }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val imeInsets = WindowInsets.ime
+    val density = LocalDensity.current
+    LaunchedEffect(pendingArtist) {
+        val artist = pendingArtist ?: return@LaunchedEffect
+        withTimeoutOrNull(IME_HIDE_TIMEOUT_MS) {
+            snapshotFlow { imeInsets.getBottom(density) > 0 }.first { visible -> !visible }
+        }
+        artistSheet = artist
+        pendingArtist = null
+    }
     var showInfo by remember { mutableStateOf(false) }
     // Playlists: ficha abierta (por id, para ver los cambios en vivo),
     // canciones pendientes de añadir y diálogos de nombre/borrado.
@@ -351,6 +393,11 @@ fun MainScreen(nav: NavController) {
                         bottomContentPadding = contentBottomPadding,
                         results = state.searchResults,
                         currentSongUri = currentSongUri,
+                        onOpenArtist = { artist ->
+                            focusManager.clearFocus(force = true)
+                            keyboard?.hide()
+                            pendingArtist = artist
+                        },
                         onPlay = { albumKey, song ->
                             val albumSongs = state.grouped[albumKey] ?: return@SearchResultsView
                             val idx = albumSongs.indexOf(song).coerceAtLeast(0)
@@ -580,13 +627,17 @@ fun MainScreen(nav: NavController) {
             // cada recomposición era caro mientras el panel está abierto.
             val displayArtist = remember(artist) { Artists.displayName(artist) }
             val albums = remember(artist, state.grouped) { Artists.albumsOf(artist, state.grouped) }
+            val looseSongs = remember(artist, state.grouped) { Artists.looseSongsOf(artist, state.grouped) }
             ArtistAlbumsSheet(
                 artist = displayArtist,
                 albums = albums,
+                looseSongs = looseSongs,
                 onOpenAlbum = { name, songs ->
                     artistSheet = null
                     albumSheet = name to songs
                 },
+                onPlayArtist = { name, songs -> playAlbumDelayed(name, songs, 0) },
+                onPlayArtistShuffled = { name, songs -> playAlbumShuffledDelayed(name, songs) },
                 onDismiss = { artistSheet = null },
             )
         }
@@ -641,9 +692,10 @@ fun MainScreen(nav: NavController) {
 @Composable
 private fun SearchResultsView(
     query: String,
-    results: List<Pair<String, Song>>,
+    results: SearchResults,
     bottomContentPadding: Dp,
     currentSongUri: String?,
+    onOpenArtist: (String) -> Unit,
     onPlay: (String, Song) -> Unit,
     onAddToNext: (Song) -> Unit,
     onAddToEnd: (Song) -> Unit,
@@ -660,7 +712,7 @@ private fun SearchResultsView(
         }
         return
     }
-    if (results.isEmpty()) {
+    if (results.isEmpty) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
                 "Sin resultados para \"$query\"",
@@ -670,20 +722,32 @@ private fun SearchResultsView(
         }
         return
     }
+    val songs = results.songs
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
             start = 12.dp, end = 12.dp, top = 12.dp, bottom = bottomContentPadding,
         ),
     ) {
+        if (results.artists.isNotEmpty()) {
+            item(key = "h:artists") { SearchSectionHeader("Artistas") }
+            items(
+                count = results.artists.size,
+                key = { index -> "a:" + results.artists[index].key },
+            ) { index ->
+                val hit = results.artists[index]
+                ArtistResultRow(hit, onClick = { onOpenArtist(hit.name) })
+            }
+            if (songs.isNotEmpty()) item(key = "h:songs") { SearchSectionHeader("Canciones") }
+        }
         // `key` por canción: sin él el estado interno de SongTile (menú desplegable,
         // decodificación de portada) se reasigna por posición y el menú
         // abierto salta a otra canción al cambiar la lista de resultados.
         items(
-            count = results.size,
-            key = { index -> results[index].second.stableId },
+            count = songs.size,
+            key = { index -> songs[index].second.stableId },
         ) { index ->
-            val (albumKey, song) = results[index]
+            val (albumKey, song) = songs[index]
             SongTile(
                 song = song,
                 isCurrent = currentSongUri != null && currentSongUri == song.playUri,
@@ -691,6 +755,105 @@ private fun SearchResultsView(
                 onAddToNext = { onAddToNext(song) },
                 onAddToEnd = { onAddToEnd(song) },
                 onAddToPlaylist = { onAddToPlaylist(song) },
+            )
+        }
+        if (results.lyrics.isNotEmpty()) {
+            item(key = "h:lyrics") { SearchSectionHeader("En letras") }
+            items(
+                count = results.lyrics.size,
+                key = { index -> "l:" + results.lyrics[index].song.stableId },
+            ) { index ->
+                val hit = results.lyrics[index]
+                LyricResultRow(
+                    hit = hit,
+                    isCurrent = currentSongUri != null && currentSongUri == hit.song.playUri,
+                    onClick = { onPlay(hit.albumKey, hit.song) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSectionHeader(title: String) {
+    Text(
+        title.uppercase(),
+        color = EighthTheme.TextTertiary,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.2.sp,
+        modifier = Modifier.padding(start = 4.dp, top = 6.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun ArtistResultRow(hit: ArtistHit, onClick: () -> Unit) {
+    val aura = animatedAura()
+    Row(
+        Modifier
+            .padding(bottom = 7.dp)
+            .fillMaxWidth()
+            .pressClickable(pressedScale = 0.97f, onClick = onClick)
+            .glassCard()
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TintedIconBadge(Icons.Rounded.Person, aura)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                hit.name,
+                color = EighthTheme.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val counts = LibrarySearch.artistCountLabel(hit.albumCount, hit.looseSongCount)
+            if (counts.isNotEmpty()) {
+                Text(
+                    counts,
+                    color = EighthTheme.TextSecondary,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+        Icon(Icons.Rounded.ChevronRight, null, tint = EighthTheme.TextTertiary, modifier = Modifier.size(20.dp))
+    }
+}
+
+@Composable
+private fun LyricResultRow(hit: LyricHit, isCurrent: Boolean, onClick: () -> Unit) {
+    val aura = animatedAura()
+    Row(
+        Modifier
+            .padding(bottom = 7.dp)
+            .fillMaxWidth()
+            .pressClickable(pressedScale = 0.97f, onClick = onClick)
+            .glassCard(active = isCurrent, accent = EighthTheme.accent(aura))
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TintedIconBadge(Icons.Rounded.Lyrics, aura)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                buildString {
+                    append(hit.song.displayTitle)
+                    hit.song.artist?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+                },
+                color = EighthTheme.TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "«${hit.line}»",
+                color = EighthTheme.TextSecondary,
+                fontSize = 12.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
