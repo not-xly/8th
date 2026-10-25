@@ -56,9 +56,6 @@ sealed interface UiEvent {
     ) : UiEvent
 
     data class ShowSnackbar(val text: String) : UiEvent
-
-    /** The current library source failed: the UI must launch the SAF file picker. */
-    data object OpenFilePicker : UiEvent
 }
 
 /**
@@ -303,7 +300,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (gen != enrichGen) return@startLibraryLoad
             if (songs.isNullOrEmpty()) {
-                if (!silent) eventChannel.send(UiEvent.OpenFilePicker)
+                if (!silent) eventChannel.send(UiEvent.ShowSnackbar("No hay canciones en esa carpeta. Añade audio y vuelve a elegirla"))
                 return@startLibraryLoad
             }
             prefs.setLibrarySource(treeUri, scanned)

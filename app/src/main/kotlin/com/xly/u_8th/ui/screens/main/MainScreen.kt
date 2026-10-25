@@ -231,18 +231,6 @@ fun MainScreen(nav: NavController) {
             vm.pickFolder(uri.toString())
         }
     }
-    val filesPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        for (uri in uris) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            } catch (_: Exception) {
-            }
-        }
-        vm.loadFiles(uris.map { it.toString() })
-    }
     val audioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
         // El listado maneja el resultado vacío con el fallback al picker.
         if (pendingFolderPick) {
@@ -285,7 +273,6 @@ fun MainScreen(nav: NavController) {
                     scope.launch {
                         snackbarHostState.showSnackbar(event.text, duration = SnackbarDuration.Short)
                     }
-                UiEvent.OpenFilePicker -> filesPicker.launch(arrayOf("audio/*"))
             }
         }
     }
